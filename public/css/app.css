@@ -73,7 +73,6 @@ h1, h2, p, dl, dd { margin: 0; }
 }
 .brand { display: flex; align-items: baseline; gap: 8px; text-decoration: none; min-width: 0; }
 .brand-name { font-family: var(--mono); font-weight: 500; font-size: 1.125rem; letter-spacing: 0.04em; }
-.brand-tag { font-size: 0.75rem; color: #cbd5e1; }
 .site-nav { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 0.875rem; }
 .site-nav a { color: #cbd5e1; text-decoration: none; padding: 4px 0; }
 .site-nav a:hover, .site-nav a[aria-current="page"] { color: #fff; }
@@ -87,7 +86,6 @@ h1, h2, p, dl, dd { margin: 0; }
 }
 
 .main { padding-top: 20px; padding-bottom: 64px; }
-.footer { padding-bottom: 32px; font-size: 0.75rem; color: var(--muted); }
 
 /* --- headings & layout ------------------------------------------------- */
 .page-title { font-size: 1.25rem; font-weight: 700; margin-bottom: 4px; }
