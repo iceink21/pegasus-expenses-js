@@ -15,6 +15,7 @@ import {
   PRAGMA_WAL,
   SCHEMA_STATEMENTS,
   TX_BEGIN,
+  TX_BEGIN_IMMEDIATE,
   TX_COMMIT,
   TX_ROLLBACK,
 } from "./sql.js";
@@ -51,9 +52,10 @@ export function openDb(dbPath) {
 /**
  * Run `work(db)` inside one transaction. `work` must be synchronous: an await
  * inside it would let another request's statements join this transaction.
+ * Pass `{ immediate: true }` when `work` reads before it writes.
  */
-export function inTransaction(db, work) {
-  statement(db, TX_BEGIN).run();
+export function inTransaction(db, work, { immediate = false } = {}) {
+  statement(db, immediate ? TX_BEGIN_IMMEDIATE : TX_BEGIN).run();
   try {
     const result = work(db);
     if (result && typeof result.then === "function") {

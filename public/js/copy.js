@@ -2,6 +2,9 @@
 // the test suite. Port of app/templating.py and the error tables in
 // app/main.py, so the softer UNREADABLE wording cannot drift between pages.
 // UNREADABLE asks for a clearer photo; it never implies fraud.
+//
+// VERDICT_UI is admin-only copy: member sessions never receive a verdict, and
+// see SUBMITTED_UI after every upload whatever the server decided.
 
 // Served at /shared/numbers.js; the relative path also resolves under Node,
 // where the test suite imports this module straight from disk.
@@ -36,6 +39,13 @@ export const VERDICT_UI = Object.freeze({
   },
 });
 
+export const SUBMITTED_UI = Object.freeze({
+  headline: "ส่งหลักฐานเรียบร้อยแล้ว",
+  message: "รอผู้ดูแลตรวจสอบ",
+  tone: "info",
+  icon: "✓",
+});
+
 const SOURCE_LABEL = Object.freeze({
   qr: "QR (EMVCo tag 54)",
   ocr: "OCR",
@@ -62,7 +72,9 @@ const DETAIL_MESSAGES_TH = Object.freeze({
   amount_not_a_number: "จำนวนเงินต้องเป็นตัวเลข",
   amount_must_be_positive: "จำนวนเงินต้องมากกว่า 0",
   amount_out_of_range: "จำนวนเงินเกินช่วงที่รับได้",
-  unknown_member: "ไม่พบชื่อสมาชิกคนนี้ในทีม",
+  member_name_required: "กรุณาพิมพ์ชื่อของคุณ",
+  member_name_too_long: "ชื่อยาวเกินไป (ไม่เกิน 60 ตัวอักษร)",
+  member_name_invalid: "ชื่อมีอักขระที่ใช้ไม่ได้ กรุณาพิมพ์ใหม่",
   unknown_category: "ไม่พบหมวดค่าใช้จ่ายนี้",
   empty_file: "ไม่พบไฟล์รูปสลิป",
   file_too_large: "ไฟล์ใหญ่เกินไป กรุณาย่อรูปก่อนอัปโหลด",

@@ -40,7 +40,7 @@ loadInto(container, async () => {
     h(
       "div",
       { class: "card" },
-      h("h2", { class: "section-title" }, "ยอดรายคน"),
+      h("h2", { class: "section-title" }, "สมาชิกและยอดรายคน"),
       keyValueList(
         data.totals.map((total) => [
           h("span", {}, total.member_name + " ", h("span", { class: "xsmall muted" }, "(" + total.n + " รายการ)")),

@@ -1,8 +1,11 @@
-// Shared-passcode auth: team passcode + name-select, plus a separate admin password.
+// Shared-passcode auth: team passcode + typed name, plus a separate admin password.
 //
 // There are no per-user accounts. The team passcode exists so the upload URL is
-// not a public write endpoint if the link leaks into a LINE group; the member
-// name is then chosen per upload from a fixed dropdown.
+// not a public write endpoint if the link leaks into a LINE group. At login the
+// visitor also types their name; it is resolved to a members row (created if
+// new) and that member id is sealed into the signed session. Every later
+// member-scoped check uses that id. Knowing the passcode is still enough to
+// log in under any name: see README §3.
 //
 // Comparison is hash-then-constant-time: both sides are SHA-256 digested and
 // compared with timingSafeEqual, so neither length nor content leaks by timing.
@@ -10,7 +13,7 @@
 import crypto from "node:crypto";
 
 import { AuditAction, writeAudit } from "./audit.js";
-import { HttpError } from "./http-error.js";
+import { loadMember } from "./members.js";
 import { makePrincipal } from "./permissions.js";
 import { readSession } from "./session.js";
 
@@ -57,9 +60,19 @@ const LOGIN_PATH = { team: "/login", admin: "/admin/login" };
 function sessionGate(ctx, level, mode) {
   return (req, res, next) => {
     const session = readSession(req, ctx.settings);
-    const allowed = level === "admin" ? session.admin : session.team || session.admin;
+    let allowed = Boolean(session.admin);
+    let reason = level === "admin" ? "no_admin_session" : "no_team_session";
+    let member = null;
+    if (level === "team" && !session.admin && session.team) {
+      // A team session must name an existing member. Cookies issued before
+      // typed names (no member_id) send the person back to log in again.
+      member = Number.isSafeInteger(session.member_id) ? loadMember(ctx.db, session.member_id) : null;
+      allowed = member !== null;
+      reason = "no_member_identity";
+    }
     if (allowed) {
       req.pegasusSession = session;
+      req.pegasusMember = member;
       next();
       return;
     }
@@ -70,7 +83,7 @@ function sessionGate(ctx, level, mode) {
       subjectType: "route",
       subjectId: req.method + " " + req.originalUrl.split("?")[0],
       outcome: "denied",
-      detail: { reason: level === "admin" ? "no_admin_session" : "no_team_session" },
+      detail: { reason },
       clientIp: clientIp(req, ctx.settings),
     });
     const location = LOGIN_PATH[level];
@@ -96,14 +109,19 @@ export function adminPrincipal(req, settings) {
   return makePrincipal({ kind: "admin", name: "admin", clientIp: clientIp(req, settings) });
 }
 
-/** Principal for a member action. The name must be on the roster. */
-export function memberPrincipal(req, settings, name) {
-  const session = req.pegasusSession ?? readSession(req, settings);
-  if (session.admin) {
-    // An admin acting on the member page still records the chosen name, but
-    // keeps admin scope.
-    return makePrincipal({ kind: "admin", name: name || "admin", clientIp: clientIp(req, settings) });
-  }
-  if (!settings.members.includes(name)) throw new HttpError(400, "unknown_member");
-  return makePrincipal({ kind: "member", name, clientIp: clientIp(req, settings) });
+/**
+ * Principal for a request that passed requireTeam. A team session acts as the
+ * member bound at login; nothing in the request can change who that is.
+ */
+export function memberPrincipal(req, settings) {
+  const session = req.pegasusSession ?? {};
+  if (session.admin) return adminPrincipal(req, settings);
+  const member = req.pegasusMember;
+  if (!member) throw new Error("memberPrincipal used on a route without requireTeam");
+  return makePrincipal({
+    kind: "member",
+    name: member.name,
+    memberId: member.id,
+    clientIp: clientIp(req, settings),
+  });
 }

@@ -57,7 +57,19 @@ export function decideVerdict(claimed, extracted, settings) {
 /** Store evidence, extract, decide, persist, audit — one transaction. */
 export async function recordSubmission(
   db,
-  { principal, settings, providers, memberName, category, note, claimedAmount, imageBytes, filename, contentType },
+  {
+    principal,
+    settings,
+    providers,
+    memberId,
+    memberName,
+    category,
+    note,
+    claimedAmount,
+    imageBytes,
+    filename,
+    contentType,
+  },
 ) {
   const imageHash = sha256Hex(imageBytes);
 
@@ -114,6 +126,7 @@ export async function recordSubmission(
       evidence.backend,
       evidence.ref,
       evidence.url,
+      memberId,
     );
     const id = Number(inserted.lastInsertRowid);
 
@@ -127,6 +140,7 @@ export async function recordSubmission(
       outcome: verdict,
       detail: {
         member: memberName,
+        member_id: memberId,
         claimed: claimedAmount,
         extracted: extraction.amount,
         difference,
@@ -162,8 +176,11 @@ export async function recordSubmission(
     return id;
   });
 
+  // The full decision. Routes must pass it through views.js before it reaches
+  // a non-admin session.
   return Object.freeze({
     expense_id: expenseId,
+    member_id: memberId,
     verdict,
     flagged: Boolean(flagged),
     flag_reason: flagReason,

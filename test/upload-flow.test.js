@@ -1,14 +1,16 @@
 // Port of tests/test_upload_flow.py — end-to-end verdict paths, each asserting
 // BOTH the expense row and the audit row. The audit assertions are the point:
 // a decision that is not logged at the moment it is made is the failure mode
-// this app was built to avoid.
+// this app was built to avoid. Uploads here run as a member, who is told
+// nothing about the verdict (test/member-privacy.test.js), so verdicts are
+// read from the stored row.
 
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { test } from "node:test";
 
 import { VERDICT_UI } from "../public/js/copy.js";
-import { MEMBERS, query, startApp, stubSlip, teamClient, upload } from "./helpers.js";
+import { adminClient, MEMBERS, query, startApp, stubSlip, teamClient, upload } from "./helpers.js";
 
 const EXPENSES_ORDERED = "SELECT * FROM expenses ORDER BY id";
 const AUDIT_FOR_EXPENSE =
@@ -30,9 +32,10 @@ test("MATCH path", async (t) => {
     payload: stubSlip("PEGASUS_STUB_AMOUNT=1250.00"),
   });
   assert.equal(status, 200);
-  assert.equal(body.decision.verdict, "MATCH");
+  assert.equal(body.status, "received");
 
   const row = lastExpense(app.dbPath);
+  assert.equal(body.expense.id, row.id);
   assert.equal(row.verdict, "MATCH");
   assert.equal(row.flagged, 0);
   assert.equal(row.flag_reason, null);
@@ -60,12 +63,11 @@ test("MISMATCH path flags the row and writes the audit row", async (t) => {
     payload: stubSlip("PEGASUS_STUB_AMOUNT=980.00"),
   });
   assert.equal(status, 200);
-  assert.equal(body.decision.verdict, "MISMATCH");
-  assert.equal(body.decision.difference, 270);
-  // The result page shows this headline for the verdict the server returned.
-  assert.equal(VERDICT_UI[body.decision.verdict].headline, "ยอดที่กรอกไม่ตรงกับสลิป");
+  assert.equal(body.status, "received");
 
   const row = lastExpense(app.dbPath);
+  // The admin's result page shows this headline for the stored verdict.
+  assert.equal(VERDICT_UI[row.verdict].headline, "ยอดที่กรอกไม่ตรงกับสลิป");
   assert.equal(row.verdict, "MISMATCH");
   assert.equal(row.flagged, 1);
   assert.equal(row.flag_reason, "amount_mismatch");
@@ -79,6 +81,7 @@ test("MISMATCH path flags the row and writes the audit row", async (t) => {
   assert.equal(mismatch[0].outcome, "MISMATCH");
   assert.ok(mismatch[0].detail.includes("1250") && mismatch[0].detail.includes("980"));
   assert.equal(mismatch[0].actor_name, MEMBERS[0]);
+  assert.equal(JSON.parse(mismatch[0].detail).member_id, row.member_id);
 });
 
 test("UNREADABLE path is audited but not flagged", async (t) => {
@@ -89,13 +92,14 @@ test("UNREADABLE path is audited but not flagged", async (t) => {
     payload: stubSlip("PEGASUS_STUB_UNREADABLE"),
   });
   assert.equal(status, 200);
-  // Softer copy: ask for a retake, never imply fraud.
-  const ui = VERDICT_UI[body.decision.verdict];
+  assert.equal(body.status, "received");
+
+  const row = lastExpense(app.dbPath);
+  // Admin-side copy stays soft: ask for a retake, never imply fraud.
+  const ui = VERDICT_UI[row.verdict];
   assert.ok(ui.message.includes("ถ่ายใหม่"));
   assert.notEqual(ui.headline, "ยอดที่กรอกไม่ตรงกับสลิป");
   assert.equal(ui.tone, "info");
-
-  const row = lastExpense(app.dbPath);
   assert.equal(row.verdict, "UNREADABLE");
   assert.equal(row.flagged, 0, "UNREADABLE must never be stored as a flag");
   assert.equal(row.flag_reason, null);
@@ -117,7 +121,7 @@ test("duplicate hash flags the row, reuses the evidence and writes the audit row
 
   const second = await upload(team, { claimed: "310.50", payload });
   assert.equal(second.status, 200);
-  assert.equal(second.body.decision.is_duplicate, true);
+  assert.equal(second.body.status, "received");
 
   const row = lastExpense(app.dbPath);
   assert.notEqual(row.id, original.id);
@@ -167,11 +171,27 @@ test("rejects a bad amount", async (t) => {
   assert.equal(body.detail, "amount_not_a_number");
 });
 
-test("rejects an unknown member", async (t) => {
+test("a member's member_name field is ignored; the session decides who submitted", async (t) => {
   const app = await startApp(t);
-  const { status, body } = await upload(await teamClient(app), { member: "คนนอกทีม" });
-  assert.equal(status, 400);
-  assert.equal(body.detail, "unknown_member");
+  const team = await teamClient(app, MEMBERS[0]);
+  const { status } = await upload(team, { member: MEMBERS[1], payload: stubSlip("PEGASUS_STUB_AMOUNT=100.00", "x") });
+  assert.equal(status, 200);
+  const row = lastExpense(app.dbPath);
+  assert.equal(row.member_name, MEMBERS[0]);
+  const [member] = query(app.dbPath, "SELECT * FROM members WHERE name = ?", MEMBERS[0]);
+  assert.equal(row.member_id, member.id);
+  assert.equal(query(app.dbPath, "SELECT * FROM members WHERE name = ?", MEMBERS[1]).length, 0);
+});
+
+test("an admin upload needs a valid typed name", async (t) => {
+  const app = await startApp(t);
+  const admin = await adminClient(app);
+  const missing = await upload(admin, { member: "" });
+  assert.equal(missing.status, 422);
+  const bad = await upload(admin, { member: "a\u202Eb" });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.body.detail, "member_name_invalid");
+  assert.equal(query(app.dbPath, EXPENSES_ORDERED).length, 0);
 });
 
 test("rejects an oversize file with 413", async (t) => {
@@ -190,17 +210,20 @@ test("accepts a claimed amount typed with Thai digits", async (t) => {
     payload: stubSlip("PEGASUS_STUB_AMOUNT=1250.00", "thai-digits"),
   });
   assert.equal(status, 200);
-  assert.equal(body.decision.claimed_amount, 1250);
-  assert.equal(body.decision.verdict, "MATCH");
+  assert.equal(body.expense.claimed_amount, 1250);
+  assert.equal(lastExpense(app.dbPath).verdict, "MATCH");
 });
 
-test("the my-expenses API lists only the asserted member's rows", async (t) => {
+test("the my-expenses API lists only the session member's rows", async (t) => {
   const app = await startApp(t);
-  const team = await teamClient(app);
-  await upload(team, { member: MEMBERS[0], payload: stubSlip("PEGASUS_STUB_AMOUNT=1.00", "a") });
-  await upload(team, { member: MEMBERS[1], payload: stubSlip("PEGASUS_STUB_AMOUNT=1.00", "b") });
-  const response = await team.get("/api/my?member=" + encodeURIComponent(MEMBERS[1]));
+  const first = await teamClient(app, MEMBERS[0]);
+  const second = await teamClient(app, MEMBERS[1]);
+  await upload(first, { payload: stubSlip("PEGASUS_STUB_AMOUNT=1.00", "a") });
+  await upload(second, { payload: stubSlip("PEGASUS_STUB_AMOUNT=1.00", "b") });
+  // ?member= is ignored for a member session.
+  const response = await first.get("/api/my?member=" + encodeURIComponent(MEMBERS[1]));
   const body = await response.json();
-  assert.deepEqual(body.rows.map((row) => row.member_name), [MEMBERS[1]]);
-  assert.deepEqual(body.members, MEMBERS);
+  assert.deepEqual(body.rows.map((row) => row.member_name), [MEMBERS[0]]);
+  assert.deepEqual(body.member, { name: MEMBERS[0] });
+  assert.equal(body.members, undefined, "a member gets no roster");
 });

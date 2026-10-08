@@ -63,8 +63,6 @@ export const INSECURE_DEFAULTS = Object.freeze([
   ["sessionSecret", "SESSION_SECRET", DEFAULT_SESSION_SECRET],
 ]);
 
-export const DEFAULT_MEMBERS = Object.freeze(["ติ้ว", "นาย", "คูการ์", "หัวหน้าทีม"]);
-
 export const DEFAULT_CATEGORIES = Object.freeze([
   "อะไหล่โดรน",
   "อิเล็กทรอนิกส์",
@@ -97,7 +95,8 @@ export function loadSettings(env = process.env) {
     // cookie over plain http, which is what keeps local http dev working.
     cookieSecure: envBool(env, "COOKIE_SECURE", !allowInsecureDefaults),
 
-    members: envList(env, "TEAM_MEMBERS", DEFAULT_MEMBERS),
+    // Members are typed at login and stored in the members table; there is no
+    // configured roster (TEAM_MEMBERS is no longer read).
     categories: envList(env, "EXPENSE_CATEGORIES", DEFAULT_CATEGORIES),
 
     // MATCH when |claimed - extracted| <= max(epsilon_thb, claimed * epsilon_pct).

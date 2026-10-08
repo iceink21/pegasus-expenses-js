@@ -50,16 +50,20 @@ text file:
 printf 'PEGASUS_STUB_AMOUNT=980.00\n' > /tmp/slip.jpg
 
 J=/tmp/cookies.txt
-curl -s -c $J -b $J -X POST -d "passcode=pegasus-dev" http://127.0.0.1:8811/login
+curl -s -c $J -b $J --data-urlencode "passcode=pegasus-dev" \
+  --data-urlencode "member_name=ติ้ว" http://127.0.0.1:8811/login
 curl -s -c $J -b $J -X POST http://127.0.0.1:8811/upload \
-  -F "member_name=ติ้ว" -F "category=อะไหล่โดรน" \
+  -F "category=อะไหล่โดรน" \
   -F "claimed_amount=1250.00" -F "note=test" \
   -F "slip=@/tmp/slip.jpg;type=image/jpeg"
 ```
 
 The claim is 1250 and the slip reads 980, so the verdict is `MISMATCH`. The
 expense row is flagged, and an `expense.decision.mismatch` audit row is written.
-The response is JSON: the decision plus a `result_url` for the result page.
+The member's JSON response does **not** say so: it is
+`{"status":"received","expense":{id, created_at, member_name, category, note, claimed_amount},"result_url":…}`
+for every outcome. Log in at `/admin/login` and read `/api/expenses/<id>` to
+see the verdict.
 Markers:
 
 | marker in the uploaded bytes | result |
@@ -161,12 +165,19 @@ written in middleware or a response hook. Audited:
 
 ## 3. Auth model
 
-Auth is a shared team passcode plus a name picked from a list. There are **no**
-per-user accounts:
+Auth is a shared team passcode plus a typed name. There are **no** per-user
+accounts:
 
-1. A visitor enters the team passcode and gets a signed session cookie
-   (HMAC-SHA256, HttpOnly, SameSite=Lax, Secure in production, 12 h max age).
-2. On each upload they pick their name from the member dropdown.
+1. A visitor types their name and the team passcode. The passcode is checked
+   first; then the name is normalized (Unicode NFC, zero-width characters
+   removed, whitespace collapsed, trimmed; 1–60 characters, no control or
+   format characters) and matched case-insensitively against the `members`
+   table. An unknown name creates a member (audited as `member.created`).
+2. The member id is sealed into the signed session cookie (HMAC-SHA256,
+   HttpOnly, SameSite=Lax, Secure in production, 12 h max age). Uploads,
+   "my expenses" and the scope check all use that id; no request field can
+   change it. To act as someone else, log out and log in again.
+3. Sessions issued before typed names (no member id) are sent back to log in.
 
 A separate **admin password** opens the team lead view: all expenses, flags,
 the audit log, and CSV export. Both secrets are compared as SHA-256 digests with
@@ -181,14 +192,28 @@ still at its default, and the error names the offending variables. Set
 does this for you). The same flag drives the `COOKIE_SECURE` default: cookies
 are Secure unless you are explicitly in dev.
 
+### Members never see the verdict
+
+A team session is never told whether a bill checked out. Every member-facing
+response (the upload reply, `/result`, `/my`, `/expenses/:id`) goes through
+the allow-list in `src/views.js`: id, timestamp, name, category, note and the
+claimed amount. No verdict, extracted amount, difference, tolerance, flag,
+duplicate link or extractor detail; the stub-mode banner is admin-only too.
+The verdict is still computed, stored, flagged and audited exactly as before,
+and the admin sees all of it (dashboard, detail, audit log, CSV).
+
 ### What "member" actually means
 
-There is **no enforced per-member access boundary**, and that is deliberate for
-a four-person team. The member name is a client-asserted `?member=` label. The
-session only proves that someone knew the team passcode. The row-label check
-guards against mislabelling, not against access. It is still real and its
-denials are audited, but anyone with the passcode can edit the label. Real
-isolation needs per-user accounts, which are out of scope (§7).
+The member id in the session is a real boundary **between sessions**, but it
+is **not an identity**. Anyone with the team passcode can type another
+member's name at login and get a session as that member: they would see that
+member's "my expenses" list and could submit in their name. Because of the
+section above, what they see is only what was typed in (amounts, categories,
+notes, times); verdicts and flags stay admin-only. Every login is audited
+with the name and client IP, so impersonation is traceable after the fact,
+not prevented. A typo at login creates a new member rather than an error;
+the admin sees every member on the dashboard. Real isolation needs per-user
+accounts, which are out of scope (§7).
 
 ---
 
@@ -227,7 +252,6 @@ included for non-Docker builders.
 | `SESSION_SECRET` | **yes** | `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"` |
 | `COOKIE_SECURE` | no | Defaults to `1` unless `ALLOW_INSECURE_DEFAULTS=1` |
 | `TRUSTED_PROXY_IPS` | **yes on Railway** | `*` trusts `X-Forwarded-For` from Railway's edge. Without it, every audit row logs the proxy's IP. `*` is only safe when nothing but the proxy can reach the port |
-| `TEAM_MEMBERS` | no | Comma-separated Thai names |
 | `EXPENSE_CATEGORIES` | no | Comma-separated |
 | `MATCH_EPSILON_THB` / `MATCH_EPSILON_PCT` | no | Defaults `1.0` / `0.005` |
 | `GOOGLE_VISION_API_KEY` | for real OCR | Absent → LLM if `OPENROUTER_API_KEY` is set, else `StubOCRExtractor` |
@@ -300,7 +324,10 @@ src/
   audit.js           audit writes, called at decision points
   session.js         signed timestamped session token + cookie helpers
   auth.js            constant-time secret check, client IP, audited session gates
-  permissions.js     permission (action) vs row-scope (client-asserted member label)
+  permissions.js     permission (action) vs row-scope (member id from the session)
+  members.js         typed-name normalization, validation, atomic lookup-or-create
+  views.js           allow-list of the expense fields a member may see
+  db/migrate.js      idempotent startup migration: members table + expenses.member_id
   decision.js        THE DECISION POINT: extract → verdict → insert → audit → commit
   providers.js       explicit provider selection + REQUIRE_REAL_PROVIDERS
   csv.js             CSV export dialect (BOM, minimal quoting, CRLF)
@@ -324,10 +351,10 @@ scripts/run_local.sh dev runner behind `npm run dev`
 |---|---|---|
 | `GET /` | — | 303 to `/upload` or `/login` |
 | `GET /login`, `GET /admin/login` | — | page |
-| `POST /login`, `POST /admin/login` | — | 303 (or `{location}` JSON when `Accept: application/json`); 401 `{detail}` on a wrong secret |
+| `POST /login`, `POST /admin/login` | — | 303 (or `{location}` JSON when `Accept: application/json`); 401 `{detail}` on a wrong secret; 400 `member_name_*` on a bad team name |
 | `GET /logout` | — | 303 `/login` |
 | `GET /upload`, `/result`, `/my`, `/expenses/:id` | team, page | page (303 `/login` without a session) |
-| `POST /upload` | team, api | decision JSON |
+| `POST /upload` | team, api | member: `{status:"received", expense}`; admin (with `member_name`): full decision JSON |
 | `GET /api/upload-form`, `/api/my`, `/api/expenses/:id` | team, api | JSON (401 `{location}` without a session) |
 | `GET /admin`, `/admin/audit`, `/admin/export.csv` | admin, page | page / CSV |
 | `GET /api/admin/dashboard`, `/api/admin/audit` | admin, api | JSON |

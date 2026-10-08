@@ -27,6 +27,8 @@ export const AuditAction = Object.freeze({
 
   ACCESS_DENIED: "access.denied",
 
+  MEMBER_CREATED: "member.created",
+
   ADMIN_VIEW: "admin.view",
   ADMIN_EXPORT_CSV: "admin.export_csv",
   ADMIN_VIEW_AUDIT: "admin.view_audit",

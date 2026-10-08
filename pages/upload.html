@@ -31,12 +31,15 @@
 
   <main class="wrap main" id="main">
     <h1 class="page-title">ส่งสลิปค่าใช้จ่าย</h1>
-    <p class="page-lede">เลือกชื่อตัวเอง กรอกยอดที่จ่ายจริง แล้วแนบรูปสลิป ระบบจะอ่านยอดจากรูปและเทียบให้เอง</p>
+    <p class="page-lede">กรอกยอดที่จ่ายจริง แล้วแนบรูปสลิป ผู้ดูแลจะเป็นผู้ตรวจสอบรายการ</p>
+    <p class="small" id="member-identity" hidden></p>
     <p class="notice notice-error" id="form-error" role="alert" hidden></p>
     <form method="post" action="/upload" enctype="multipart/form-data" class="card stack" id="upload-form">
-      <div class="field">
+      <div class="field" id="member-field" hidden>
         <label for="member_name">ชื่อผู้จ่าย</label>
-        <select class="input" id="member_name" name="member_name" required></select>
+        <input class="input" id="member_name" name="member_name" type="text" maxlength="60" list="member-names" autocomplete="off" disabled>
+        <datalist id="member-names"></datalist>
+        <p class="hint">พิมพ์ชื่อสมาชิก ถ้ายังไม่มีในระบบจะสร้างให้ใหม่</p>
       </div>
       <div class="field">
         <label for="category">หมวดค่าใช้จ่าย</label>

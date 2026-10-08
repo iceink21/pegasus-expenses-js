@@ -31,12 +31,12 @@
 
   <main class="wrap main" id="main">
     <h1 class="page-title">รายการของฉัน</h1>
-    <form method="get" action="/my" class="card inline-form mt">
+    <p class="page-lede" id="member-subtitle" hidden></p>
+    <form method="get" action="/my" class="card inline-form mt" id="member-lookup" hidden>
       <div class="field">
-        <label for="member">เลือกชื่อ</label>
-        <select class="input" id="member" name="member">
-          <option value="">— เลือก —</option>
-        </select>
+        <label for="member">ชื่อสมาชิก</label>
+        <input class="input" id="member" name="member" type="text" maxlength="60" list="member-names" autocomplete="off">
+        <datalist id="member-names"></datalist>
       </div>
       <button type="submit" class="btn btn-primary">ดู</button>
     </form>

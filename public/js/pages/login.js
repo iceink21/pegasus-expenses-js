@@ -1,4 +1,5 @@
 // Team and admin login share this script; the form's action names the endpoint.
+// The team form also carries the typed member name; the admin form has none.
 
 import { postForm } from "../api.js";
 import { errorMessage } from "../copy.js";
@@ -17,7 +18,9 @@ form.addEventListener("submit", async (event) => {
   } catch (error) {
     errorBox.textContent = errorMessage(error.status, error.detail);
     errorBox.hidden = false;
-    form.querySelector("input[type=password]").select();
+    const nameInput = form.querySelector("#member_name");
+    if (nameInput && String(error.detail).startsWith("member_name")) nameInput.select();
+    else form.querySelector("input[type=password]").select();
   } finally {
     button.disabled = false;
   }

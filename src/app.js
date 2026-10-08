@@ -11,6 +11,7 @@ import express from "express";
 
 import { assertSecureConfig, loadSettings } from "./config.js";
 import { openDb } from "./db/connection.js";
+import { migrate } from "./db/migrate.js";
 import { createLogger } from "./log.js";
 import { buildProviders } from "./providers.js";
 import { createAdminRouter } from "./routes/admin.js";
@@ -29,6 +30,13 @@ export function buildApp({ env = process.env, fetchImpl = fetch } = {}) {
   assertSecureConfig(settings);
 
   const db = openDb(settings.dbPath);
+  try {
+    // Idempotent; links pre-existing expenses to the members table.
+    migrate(db);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   logger.info("database ready at " + settings.dbPath);
 
   let providers;

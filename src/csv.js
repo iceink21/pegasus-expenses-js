@@ -18,6 +18,7 @@ export const CSV_COLUMNS = Object.freeze([
   "evidence_backend",
   "evidence_ref",
   "evidence_url",
+  "member_id",
 ]);
 
 const NEEDS_QUOTING = /[",\r\n]/;

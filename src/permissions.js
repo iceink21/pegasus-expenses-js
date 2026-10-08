@@ -30,9 +30,13 @@ const ADMIN_PERMISSIONS = new Set([
 
 const ROLE_PERMISSIONS = { member: MEMBER_PERMISSIONS, admin: ADMIN_PERMISSIONS };
 
-/** Who is acting. `kind` is the role ("member" | "admin"); `name` the selected member. */
-export function makePrincipal({ kind, name, clientIp = "" }) {
-  return Object.freeze({ kind, name, clientIp, isAdmin: kind === "admin" });
+/**
+ * Who is acting. `kind` is the role ("member" | "admin"); `name` the display
+ * name; `memberId` the members.id bound to a team session at login (null for
+ * admin).
+ */
+export function makePrincipal({ kind, name, memberId = null, clientIp = "" }) {
+  return Object.freeze({ kind, name, memberId, clientIp, isAdmin: kind === "admin" });
 }
 
 export class PermissionDenied extends Error {
@@ -51,7 +55,9 @@ export function hasPermission(principal, action) {
 /** SCOPE check for a single expense row. Applies to reads AND writes. */
 export function canAccess(principal, row) {
   if (principal.isAdmin) return true;
-  return String(row.member_name) === principal.name;
+  // By id, never by name: two rows can carry the same display name.
+  if (principal.memberId === null || row.member_id === null || row.member_id === undefined) return false;
+  return Number(row.member_id) === principal.memberId;
 }
 
 /**

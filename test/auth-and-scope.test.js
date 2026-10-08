@@ -1,18 +1,19 @@
 // Port of tests/test_auth_and_scope.py — auth, audit-on-denial, and the
-// permission / row-label split.
+// permission / row-scope split.
 //
-// SCOPE OF THESE TESTS — read before trusting the names below. There is no
-// enforced per-member access boundary in this app and these tests do not claim
-// one. The member name is a CLIENT-ASSERTED label supplied as `?member=`; the
-// session cookie proves only that someone knew the shared team passcode and
-// carries no member identity. What is genuinely tested is that the row-label
-// check fires and is audited when the asserted label does not match the row —
-// a mislabelling guard, plus proof that the denial path writes its audit row.
+// SCOPE OF THESE TESTS — read before trusting the names below. The team login
+// takes a typed name and seals the resolved member id into the signed session;
+// the scope check compares that id with the row's member_id, and nothing in a
+// later request can change it. That is a real boundary BETWEEN SESSIONS. It is
+// not an identity boundary: anyone who knows the team passcode can log in
+// under any name (README §3). These tests pin the session boundary and that
+// every denial is audited.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { verifySecret } from "../src/auth.js";
+import { encodeToken } from "../src/session.js";
 import {
   ADMIN_PASSWORD,
   adminClient,
@@ -53,8 +54,46 @@ test("failed admin password is audited", async (t) => {
 
 test("successful logins are audited", async (t) => {
   const app = await startApp(t);
-  await app.client().postForm("/login", { passcode: TEAM_PASSCODE });
-  assert.equal(query(app.dbPath, AUDIT_BY_ACTION, "auth.team_login.success").length, 1);
+  await app.client().postForm("/login", { passcode: TEAM_PASSCODE, member_name: MEMBERS[0] });
+  const [row] = query(app.dbPath, AUDIT_BY_ACTION, "auth.team_login.success");
+  assert.equal(row.actor_name, MEMBERS[0]);
+  assert.equal(JSON.parse(row.detail).member_created, true);
+});
+
+test("a right passcode with a bad name is refused and audited", async (t) => {
+  const app = await startApp(t);
+  const response = await app.client().postForm("/login", { passcode: TEAM_PASSCODE, member_name: "   " });
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { detail: "member_name_required" });
+  const [row] = query(app.dbPath, AUDIT_BY_ACTION, "auth.team_login.failure");
+  assert.equal(JSON.parse(row.detail).reason, "member_name_required");
+  assert.equal(query(app.dbPath, "SELECT * FROM members").length, 0);
+});
+
+test("a wrong passcode never creates a member, whatever name is typed", async (t) => {
+  const app = await startApp(t);
+  const response = await app.client().postForm("/login", { passcode: "nope", member_name: "ใครก็ได้" });
+  assert.equal(response.status, 401);
+  assert.equal(query(app.dbPath, "SELECT * FROM members").length, 0);
+});
+
+test("a team session without a member id is sent back to log in", async (t) => {
+  // Cookies issued before typed names carried {team:true} only.
+  const app = await startApp(t);
+  const legacy = app.client();
+  legacy.setCookie("pegasus_session", encodeToken("test-secret", { team: true, admin: false }));
+  const page = await legacy.get("/upload");
+  assert.equal(page.status, 303);
+  assert.equal(page.headers.get("location"), "/login");
+  const api = await legacy.get("/api/my");
+  assert.equal(api.status, 401);
+
+  const ghost = app.client();
+  ghost.setCookie("pegasus_session", encodeToken("test-secret", { team: true, admin: false, member_id: 999 }));
+  assert.equal((await ghost.get("/upload")).status, 303);
+
+  const reasons = query(app.dbPath, AUDIT_BY_ACTION, "access.denied").map((row) => JSON.parse(row.detail).reason);
+  assert.deepEqual(reasons, ["no_member_identity", "no_member_identity", "no_member_identity"]);
 });
 
 test("login answers JSON to the page script and a 303 to everything else", async (t) => {
@@ -110,42 +149,41 @@ test("unauthenticated upload is refused and audited before the body is read", as
   assert.equal(JSON.parse(denial.detail).reason, "no_team_session");
 });
 
-test("mismatched member label is refused and audited", async (t) => {
-  // NOT a proof of isolation: the same session made both requests and chose
-  // the mismatching label itself. What this pins is that the check runs and
-  // that the denial reaches the audit log.
+test("another member's row is refused by id and the denial audited", async (t) => {
   const app = await startApp(t);
-  const team = await teamClient(app);
-  await upload(team, {
-    member: MEMBERS[0],
-    claimed: "100.00",
-    payload: stubSlip("PEGASUS_STUB_AMOUNT=100.00", "scope"),
-  });
+  const owner = await teamClient(app, MEMBERS[0]);
+  await upload(owner, { payload: stubSlip("PEGASUS_STUB_AMOUNT=100.00", "scope") });
   const expenseId = query(app.dbPath, EXPENSES_ORDERED).at(-1).id;
 
-  const response = await team.get(
-    "/api/expenses/" + expenseId + "?member=" + encodeURIComponent(MEMBERS[1]),
+  const other = await teamClient(app, MEMBERS[1]);
+  // The old ?member= label is ignored: identity comes from the session only.
+  const response = await other.get(
+    "/api/expenses/" + expenseId + "?member=" + encodeURIComponent(MEMBERS[0]),
   );
   assert.equal(response.status, 403);
+  assert.deepEqual(await response.json(), { detail: "scope" });
 
   const denials = query(app.dbPath, AUDIT_BY_ACTION, "access.denied");
-  assert.equal(denials.length, 1, "the row-label denial was not audited");
+  assert.equal(denials.length, 1, "the scope denial was not audited");
   assert.equal(denials[0].subject_id, String(expenseId));
+  assert.equal(denials[0].actor_name, MEMBERS[1]);
   assert.ok(denials[0].detail.includes("out_of_scope"));
 });
 
-test("matching member label can read the row", async (t) => {
+test("scope follows the member id, not the spelling of the name", async (t) => {
   const app = await startApp(t);
-  const team = await teamClient(app);
-  await upload(team, { payload: stubSlip("PEGASUS_STUB_AMOUNT=100.00", "own") });
+  const first = await teamClient(app, "Tiw");
+  await upload(first, { payload: stubSlip("PEGASUS_STUB_AMOUNT=100.00", "own") });
   const expenseId = query(app.dbPath, EXPENSES_ORDERED).at(-1).id;
-  const response = await team.get(
-    "/api/expenses/" + expenseId + "?member=" + encodeURIComponent(MEMBERS[0]),
-  );
+
+  const again = await teamClient(app, "  tIW ");
+  const response = await again.get("/api/expenses/" + expenseId);
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.expense.id, expenseId);
-  assert.deepEqual(body.view, { difference: 0, tolerance: 1, is_duplicate: false });
+  assert.equal(body.expense.member_name, "Tiw");
+  assert.equal(body.detail_level, "member");
+  assert.equal(body.view, undefined);
 });
 
 test("expense id must be an integer", async (t) => {

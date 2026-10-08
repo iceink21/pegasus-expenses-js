@@ -65,8 +65,14 @@ export function readCookie(req, name) {
   return null;
 }
 
-export function issueSession(settings, { team, admin }) {
-  return encodeToken(settings.sessionSecret, { team: Boolean(team), admin: Boolean(admin) });
+/**
+ * A team session carries the member id resolved at login; scope checks use it.
+ * Admin sessions carry none.
+ */
+export function issueSession(settings, { team, admin, memberId = null }) {
+  const payload = { team: Boolean(team), admin: Boolean(admin) };
+  if (memberId !== null) payload.member_id = memberId;
+  return encodeToken(settings.sessionSecret, payload);
 }
 
 /** The session payload for this request, or {} when absent/invalid. */

@@ -312,10 +312,11 @@ describe("upload through the app with the LLM as OCR", () => {
 
     const { status: code, body } = await upload(team, { claimed: "1250.00", payload: SLIP_PNG });
     assert.equal(code, 200);
-    assert.equal(body.decision.verdict, "MISMATCH");
-    assert.equal(body.decision.extractor, "llm:" + MODEL);
+    // The member is told nothing about the verdict or the extractor.
+    assert.ok(!JSON.stringify(body).includes("llm"));
 
-    const [row] = query(app.dbPath, "SELECT * FROM expenses WHERE id = ?", body.decision.expense_id);
+    const [row] = query(app.dbPath, "SELECT * FROM expenses WHERE id = ?", body.expense.id);
+    assert.equal(row.verdict, "MISMATCH");
     assert.equal(row.extracted_amount, 980);
     assert.equal(row.extraction_source, "llm");
     assert.match(row.extraction_detail, /^llm:test\/vision-model/);
@@ -323,7 +324,7 @@ describe("upload through the app with the LLM as OCR", () => {
     const [audit] = query(
       app.dbPath,
       "SELECT detail FROM audit_log WHERE action = 'expense.decision.mismatch' AND subject_id = ?",
-      String(body.decision.expense_id),
+      String(body.expense.id),
     );
     const detail = JSON.parse(audit.detail);
     assert.equal(detail.extractor, "llm:" + MODEL);
@@ -336,7 +337,9 @@ describe("upload through the app with the LLM as OCR", () => {
     const app = await startApp(t, { OPENROUTER_API_KEY: FAKE_KEY }, { fetchImpl });
     const { status: code, body } = await upload(await teamClient(app), { payload: SLIP_PNG });
     assert.equal(code, 200);
-    assert.equal(body.decision.verdict, "UNREADABLE");
-    assert.equal(body.decision.flagged, false);
+    assert.equal(body.status, "received");
+    const [row] = query(app.dbPath, "SELECT * FROM expenses WHERE id = ?", body.expense.id);
+    assert.equal(row.verdict, "UNREADABLE");
+    assert.equal(row.flagged, 0);
   });
 });

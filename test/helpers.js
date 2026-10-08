@@ -39,7 +39,6 @@ export function testEnv(overrides = {}) {
     SESSION_SECRET: "test-secret",
     ALLOW_INSECURE_DEFAULTS: "0",
     COOKIE_SECURE: "0",
-    TEAM_MEMBERS: MEMBERS.join(","),
     EXPENSE_CATEGORIES: CATEGORY + ",อื่น ๆ",
     REQUIRE_REAL_PROVIDERS: "0",
     ENABLE_QR_STAGE: "0",
@@ -126,9 +125,10 @@ export async function startApp(t, envOverrides = {}, { fetchImpl } = {}) {
   return { base, dbPath: env.DB_PATH, ctx: built.ctx, client: () => new Client(base) };
 }
 
-export async function teamClient(app) {
+/** A team session logged in under the typed name `memberName`. */
+export async function teamClient(app, memberName = MEMBERS[0]) {
   const client = app.client();
-  const response = await client.postForm("/login", { passcode: TEAM_PASSCODE });
+  const response = await client.postForm("/login", { passcode: TEAM_PASSCODE, member_name: memberName });
   if (response.status !== 303) throw new Error("team login failed: " + response.status);
   return client;
 }

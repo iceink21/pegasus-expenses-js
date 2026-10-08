@@ -35,7 +35,7 @@ export function queryParam(name) {
   return new URLSearchParams(window.location.search).get(name) ?? "";
 }
 
-/** Link to a member-scoped page, with the member label as a query parameter. */
+/** `path` with `?member=` added (admin lookup by typed name); `path` alone when empty. */
 export function memberHref(path, member) {
   return member ? path + "?" + new URLSearchParams({ member }) : path;
 }

@@ -92,6 +92,10 @@ kept, and lists every behaviour difference.
 | Upload page error | Full error page | Inline Thai message above the form; the inputs are kept | Mobile re-entry is painful |
 | 405 on a wrong method | Starlette 405 | 404 | Express default |
 | LLM amount extraction | — | Optional OpenRouter stage (`src/extraction/llm.js`): primary when Vision is absent, fallback after Vision otherwise. Adds `extraction_source = "llm"` and an `extractor` key in the audit detail. Verdict logic unchanged | Post-port addition (2026-10-08); not in the Python app |
+| Verdict visibility | Shown to the submitter | Member sessions get only `{status:"received", expense:{id, created_at, member_name, category, note, claimed_amount}}` from `POST /upload`, `/api/expenses/:id` and `/api/my` (allow-list in `src/views.js`); the result page shows one neutral Thai confirmation. Verdict, flags, duplicates and extraction are still stored and audited, and stay fully visible to admin | Post-port change (2026-10-08): the submitter should not learn whether the bill passed |
+| Member identity | Name picked per upload from `TEAM_MEMBERS`; `?member=` label on reads | Name typed at login, normalized, matched case-insensitively against a `members` table (created when new, audited `member.created`); its id is sealed in the session and used for uploads, "my expenses" and the scope check. `TEAM_MEMBERS` is no longer read; `?member=` and a member's `member_name` upload field are ignored. Admin uploads take a typed `member_name`. `result_url` is `/result?id=` | Post-port change (2026-10-08) |
+| Schema | `expenses.member_name` only | New `members` table (UNIQUE `name_key`) and `expenses.member_id` (last column). `src/db/migrate.js` runs at every startup in one `BEGIN IMMEDIATE` transaction: adds the column/index if missing and links unlinked rows by their stored name. A no-op once applied. `member_name` is kept on each row unchanged | Post-port change (2026-10-08) |
+| Old sessions | — | Team cookies without a member id are refused (`access.denied`, reason `no_member_identity`) and the person logs in again | Follows from the above |
 | `.env` loading | — | `npm start` / `npm run dev` pass `--env-file-if-exists=.env`; the Docker `CMD` does not | Local keys without a dotenv dependency |
 
 ## 4. Tests
@@ -109,6 +113,15 @@ kept, and lists every behaviour difference.
 - the numeric compatibility helpers, formatting filters and the CSV dialect
 - logout audit, the oversize upload (413), Thai-digit claims, and the my-expenses
   API
+- member privacy (`test/member-privacy.test.js`): for MATCH, MISMATCH,
+  UNREADABLE and duplicate uploads, every JSON body a team session can get
+  carries no verdict key or word and not the extracted amount; the admin still
+  sees verdict, flags, dashboard, CSV and audit
+- typed members (`test/members.test.js`): normalization, validation, case /
+  whitespace / NFC / zero-width variants reusing one id, 20 simultaneous logins
+  and 6 worker threads on separate connections racing one new name → one row
+- the migration (`test/migration.test.js`) from the verbatim legacy schema,
+  re-run idempotence, and that fresh and migrated tables have the same layout
 - the LLM extractor against a fake fetch (`test/llm-extraction.test.js`):
   success, malformed JSON, timeout, 401, 429 retry, network retry, null amount,
   prompt-injection text, absurd/non-positive amounts, low confidence, pipeline
