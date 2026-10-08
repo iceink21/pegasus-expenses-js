@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>บันทึกตรวจสอบ — Pegasus</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anuphan:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/css/app.css">
+  <script type="module" src="/js/pages/audit.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a href="/upload" class="brand">
+        <span class="brand-name">PEGASUS</span>
+        <span class="brand-tag">ค่าใช้จ่ายทีม AAVC 2026</span>
+      </a>
+      <nav class="site-nav" aria-label="เมนูหลัก">
+        <a href="/upload">ส่งสลิป</a>
+        <a href="/my">รายการของฉัน</a>
+        <a href="/admin" aria-current="page">หัวหน้าทีม</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="stub-banner" id="stub-banner" hidden>
+    <div class="wrap">โหมดทดสอบ: ยังไม่ได้ตั้งค่า Google Vision ระบบใช้ตัวอ่านจำลอง ยอดที่อ่านได้ไม่ใช่ยอดจริงจากสลิป</div>
+  </div>
+
+  <main class="wrap main" id="main">
+    <div class="title-row">
+      <h1 class="page-title">บันทึกตรวจสอบ</h1>
+      <a href="/admin" class="btn btn-secondary btn-small">กลับ</a>
+    </div>
+    <p class="page-lede">ทุกการตัดสินถูกบันทึกตรงจุดที่ตัดสิน รวมถึงรายการที่ยอดไม่ตรง รูปที่อ่านไม่ออก สลิปซ้ำ และการใส่รหัสผิด</p>
+    <div id="audit">
+      <p class="loading">กำลังโหลด…</p>
+    </div>
+  </main>
+
+  <footer class="wrap footer">
+    ระบบบันทึกค่าใช้จ่ายภายในทีม Pegasus — ระบบตัดสินผลจากฝั่งเซิร์ฟเวอร์เท่านั้น
+  </footer>
+  <noscript>
+    <p class="wrap notice notice-error">หน้านี้ต้องเปิด JavaScript</p>
+  </noscript>
+</body>
+</html>

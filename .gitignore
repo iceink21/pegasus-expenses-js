@@ -1,0 +1,29 @@
+# --- secrets: never commit credentials -------------------------------
+.env
+.env.*
+!.env.example
+*service-account*.json
+*service_account*.json
+*credentials*.json
+*-sa.json
+gdrive*.json
+client_secret*.json
+*.pem
+*.key
+
+# --- runtime data (DB + uploaded evidence) ---------------------------
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# --- node -------------------------------------------------------------
+node_modules/
+npm-debug.log*
+
+# --- editors / os -----------------------------------------------------
+.DS_Store
+.idea/
+.vscode/

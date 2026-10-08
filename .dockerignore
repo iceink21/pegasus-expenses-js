@@ -1,0 +1,13 @@
+node_modules
+data
+test
+scripts
+docs
+.git
+.env
+.env.*
+*.db
+*.pem
+*.key
+*service-account*.json
+*credentials*.json

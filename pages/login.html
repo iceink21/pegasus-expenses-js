@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>เข้าสู่ระบบทีม — Pegasus</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anuphan:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/css/app.css">
+  <script type="module" src="/js/pages/login.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a href="/upload" class="brand">
+        <span class="brand-name">PEGASUS</span>
+        <span class="brand-tag">ค่าใช้จ่ายทีม AAVC 2026</span>
+      </a>
+    </div>
+  </header>
+
+  <div class="stub-banner" id="stub-banner" hidden>
+    <div class="wrap">โหมดทดสอบ: ยังไม่ได้ตั้งค่า Google Vision ระบบใช้ตัวอ่านจำลอง ยอดที่อ่านได้ไม่ใช่ยอดจริงจากสลิป</div>
+  </div>
+
+  <main class="wrap main" id="main">
+    <div class="narrow">
+      <h1 class="page-title">ใส่รหัสทีม</h1>
+      <p class="page-lede">รหัสนี้ใช้ร่วมกันทั้งทีม เพื่อไม่ให้ลิงก์ที่หลุดไปในกลุ่มไลน์กลายเป็นหน้าอัปโหลดสาธารณะ</p>
+      <p class="notice notice-error" id="form-error" role="alert" hidden></p>
+      <form method="post" action="/login" class="card stack" id="login-form">
+        <div class="field">
+          <label for="passcode">รหัสทีม</label>
+          <input class="input" id="passcode" name="passcode" type="password" required autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">เข้าสู่ระบบ</button>
+      </form>
+      <p class="mt small center"><a class="muted" href="/admin/login">เข้าสู่ระบบหัวหน้าทีม</a></p>
+    </div>
+  </main>
+
+  <footer class="wrap footer">
+    ระบบบันทึกค่าใช้จ่ายภายในทีม Pegasus — ระบบตัดสินผลจากฝั่งเซิร์ฟเวอร์เท่านั้น
+  </footer>
+  <noscript>
+    <p class="wrap notice notice-error">หน้านี้ต้องเปิด JavaScript</p>
+  </noscript>
+</body>
+</html>

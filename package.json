@@ -1,0 +1,24 @@
+{
+  "name": "pegasus-expenses-js",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pegasus UAV team expense tracker (AAVC 2026) — Node.js port",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "sh scripts/run_local.sh",
+    "test": "LOG_LEVEL=silent node --test \"test/**/*.test.js\""
+  },
+  "dependencies": {
+    "express": "5.2.1",
+    "jsqr": "1.4.0",
+    "multer": "2.4.0",
+    "sharp": "0.35.5"
+  },
+  "devDependencies": {
+    "qrcode": "1.5.4"
+  }
+}

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ส่งสลิป — Pegasus</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anuphan:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/css/app.css">
+  <script type="module" src="/js/pages/upload.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a href="/upload" class="brand">
+        <span class="brand-name">PEGASUS</span>
+        <span class="brand-tag">ค่าใช้จ่ายทีม AAVC 2026</span>
+      </a>
+      <nav class="site-nav" aria-label="เมนูหลัก">
+        <a href="/upload" aria-current="page">ส่งสลิป</a>
+        <a href="/my">รายการของฉัน</a>
+        <a href="/admin">หัวหน้าทีม</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="stub-banner" id="stub-banner" hidden>
+    <div class="wrap">โหมดทดสอบ: ยังไม่ได้ตั้งค่า Google Vision ระบบใช้ตัวอ่านจำลอง ยอดที่อ่านได้ไม่ใช่ยอดจริงจากสลิป</div>
+  </div>
+
+  <main class="wrap main" id="main">
+    <h1 class="page-title">ส่งสลิปค่าใช้จ่าย</h1>
+    <p class="page-lede">เลือกชื่อตัวเอง กรอกยอดที่จ่ายจริง แล้วแนบรูปสลิป ระบบจะอ่านยอดจากรูปและเทียบให้เอง</p>
+    <p class="notice notice-error" id="form-error" role="alert" hidden></p>
+    <form method="post" action="/upload" enctype="multipart/form-data" class="card stack" id="upload-form">
+      <div class="field">
+        <label for="member_name">ชื่อผู้จ่าย</label>
+        <select class="input" id="member_name" name="member_name" required></select>
+      </div>
+      <div class="field">
+        <label for="category">หมวดค่าใช้จ่าย</label>
+        <select class="input" id="category" name="category" required></select>
+      </div>
+      <div class="field">
+        <label for="claimed_amount">ยอดที่จ่ายจริง (บาท)</label>
+        <input class="input mono" id="claimed_amount" name="claimed_amount" type="text" inputmode="decimal" required placeholder="0.00">
+      </div>
+      <div class="field">
+        <label for="note">บันทึกเพิ่มเติม (ไม่บังคับ)</label>
+        <input class="input" id="note" name="note" type="text" maxlength="500" placeholder="เช่น ซื้อมอเตอร์สำรอง 2 ตัว">
+      </div>
+      <div class="field">
+        <label for="slip">รูปสลิป</label>
+        <input class="input" id="slip" name="slip" type="file" accept="image/*" capture="environment" required>
+        <p class="hint">ถ่ายให้เห็นบรรทัดจำนวนเงินชัด ๆ ทั้งบรรทัด</p>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block" id="submit-button">ส่งสลิป</button>
+    </form>
+  </main>
+
+  <footer class="wrap footer">
+    ระบบบันทึกค่าใช้จ่ายภายในทีม Pegasus — ระบบตัดสินผลจากฝั่งเซิร์ฟเวอร์เท่านั้น
+  </footer>
+  <noscript>
+    <p class="wrap notice notice-error">หน้านี้ต้องเปิด JavaScript</p>
+  </noscript>
+</body>
+</html>
