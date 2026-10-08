@@ -8,7 +8,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "sh scripts/run_local.sh",
     "test": "LOG_LEVEL=silent node --test \"test/**/*.test.js\""
   },

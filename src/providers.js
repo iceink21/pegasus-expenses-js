@@ -6,6 +6,7 @@
 // rather than serve traffic on stubs.
 
 import { ExtractionPipeline } from "./extraction/pipeline.js";
+import { LLMAmountExtractor } from "./extraction/llm.js";
 import { QRAmountExtractor } from "./extraction/qr.js";
 import { StubOCRExtractor } from "./extraction/stub.js";
 import { VisionOCRExtractor } from "./extraction/vision.js";
@@ -24,18 +25,41 @@ export class ProviderConfigError extends Error {
   }
 }
 
+function buildLlm(settings, fetchImpl) {
+  return new LLMAmountExtractor(settings.openrouterApiKey, {
+    model: settings.openrouterModel,
+    fetchImpl,
+    minConfidence: settings.llmMinConfidence,
+    maxAmount: settings.llmMaxAmountThb,
+  });
+}
+
+/** Returns [ocrStage, fallbackStage, usingStubOcr]. */
 function buildOcr(settings, notes, fetchImpl) {
+  const llm = settings.openrouterApiKey ? buildLlm(settings, fetchImpl) : null;
+
   if (settings.googleVisionApiKey) {
     notes.push("GOOGLE_VISION_API_KEY present -> VisionOCRExtractor");
     logger.info("OCR provider: VisionOCRExtractor (Google Cloud Vision)");
-    return [new VisionOCRExtractor(settings.googleVisionApiKey, { fetchImpl }), false];
+    if (llm) {
+      notes.push("OPENROUTER_API_KEY present -> LLM fallback after Vision (" + llm.label + ")");
+      logger.info("LLM fallback: " + llm.label + " (runs only when Vision finds no amount)");
+    }
+    return [new VisionOCRExtractor(settings.googleVisionApiKey, { fetchImpl }), llm, false];
   }
-  notes.push("GOOGLE_VISION_API_KEY absent -> StubOCRExtractor (amounts are SYNTHETIC)");
+  if (llm) {
+    notes.push("GOOGLE_VISION_API_KEY absent, OPENROUTER_API_KEY present -> " + llm.label + " as OCR");
+    logger.info("OCR provider: LLMAmountExtractor (" + llm.label + ", OpenRouter)");
+    return [llm, null, false];
+  }
+  notes.push(
+    "GOOGLE_VISION_API_KEY absent, OPENROUTER_API_KEY absent -> StubOCRExtractor (amounts are SYNTHETIC)",
+  );
   logger.warning(
-    "OCR provider: Vision key absent -> using StubOCRExtractor. " +
+    "OCR provider: Vision and OpenRouter keys absent -> using StubOCRExtractor. " +
       "Extracted amounts are synthetic and must not be trusted.",
   );
-  return [new StubOCRExtractor(), true];
+  return [new StubOCRExtractor(), null, true];
 }
 
 function buildStorage(settings, notes, fetchImpl) {
@@ -77,12 +101,12 @@ function buildStorage(settings, notes, fetchImpl) {
 export function buildProviders(settings, { fetchImpl = fetch } = {}) {
   const notes = [];
 
-  const [ocrStage, usingStubOcr] = buildOcr(settings, notes, fetchImpl);
+  const [ocrStage, fallbackStage, usingStubOcr] = buildOcr(settings, notes, fetchImpl);
   const [storage, usingStubStorage] = buildStorage(settings, notes, fetchImpl);
 
   if (settings.requireRealProviders && (usingStubOcr || usingStubStorage)) {
     const missing = [];
-    if (usingStubOcr) missing.push("GOOGLE_VISION_API_KEY");
+    if (usingStubOcr) missing.push("GOOGLE_VISION_API_KEY or OPENROUTER_API_KEY");
     if (usingStubStorage) missing.push("GDRIVE_SA_JSON/GDRIVE_FOLDER_ID");
     const message =
       "REQUIRE_REAL_PROVIDERS=1 but stub providers were selected. Missing: " + missing.join(", ");
@@ -101,7 +125,9 @@ export function buildProviders(settings, { fetchImpl = fetch } = {}) {
   const slipVerifier = new NullSlipVerifier();
   notes.push("Slip verification: NullSlipVerifier (out of scope for v1)");
 
-  const pipeline = new ExtractionPipeline({ qrStage, ocrStage });
+  const pipeline = new ExtractionPipeline({ qrStage, ocrStage, fallbackStage });
+  const llmStage = fallbackStage ?? (ocrStage instanceof LLMAmountExtractor ? ocrStage : null);
+  const llmRole = llmStage ? (fallbackStage ? "fallback" : "primary") : null;
   for (const note of notes) logger.info("provider selection:", note);
 
   return Object.freeze({
@@ -118,6 +144,8 @@ export function buildProviders(settings, { fetchImpl = fetch } = {}) {
         storage: storage.name,
         slip_verifier: slipVerifier.name,
         extraction_stages: pipeline.stageNames,
+        llm_model: llmStage ? llmStage.model : null,
+        llm_role: llmRole,
         using_stub_ocr: usingStubOcr,
         using_stub_storage: usingStubStorage,
         notes,

@@ -91,6 +91,8 @@ kept, and lists every behaviour difference.
 | Session cookie | itsdangerous format | Own HMAC token format | Cookies from the Python app are not valid here, which is irrelevant for a fresh deploy |
 | Upload page error | Full error page | Inline Thai message above the form; the inputs are kept | Mobile re-entry is painful |
 | 405 on a wrong method | Starlette 405 | 404 | Express default |
+| LLM amount extraction | — | Optional OpenRouter stage (`src/extraction/llm.js`): primary when Vision is absent, fallback after Vision otherwise. Adds `extraction_source = "llm"` and an `extractor` key in the audit detail. Verdict logic unchanged | Post-port addition (2026-10-08); not in the Python app |
+| `.env` loading | — | `npm start` / `npm run dev` pass `--env-file-if-exists=.env`; the Docker `CMD` does not | Local keys without a dotenv dependency |
 
 ## 4. Tests
 
@@ -107,6 +109,10 @@ kept, and lists every behaviour difference.
 - the numeric compatibility helpers, formatting filters and the CSV dialect
 - logout audit, the oversize upload (413), Thai-digit claims, and the my-expenses
   API
+- the LLM extractor against a fake fetch (`test/llm-extraction.test.js`):
+  success, malformed JSON, timeout, 401, 429 retry, network retry, null amount,
+  prompt-injection text, absurd/non-positive amounts, low confidence, pipeline
+  fallback order, provider selection, and an upload end to end
 
 Not covered by automated tests: rendering of the authenticated pages in a
 browser. Their scripts pass `node --check`, and the shared module chain was

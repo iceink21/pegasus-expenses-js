@@ -106,9 +106,9 @@ export class Client {
 }
 
 /** Build + listen on an ephemeral port; torn down when the test ends. */
-export async function startApp(t, envOverrides = {}) {
+export async function startApp(t, envOverrides = {}, { fetchImpl } = {}) {
   const env = testEnv(envOverrides);
-  const built = buildApp({ env });
+  const built = buildApp(fetchImpl ? { env, fetchImpl } : { env });
   const server = await new Promise((resolve) => {
     const listening = built.app.listen(0, "127.0.0.1", () => resolve(listening));
   });

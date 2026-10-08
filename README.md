@@ -29,6 +29,12 @@ binds to `127.0.0.1`, and restarts on source changes (`node --watch`). Override
 any setting through the environment, e.g. `PORT=9000 npm run dev`. The default
 port is 8811 because 8000 is taken by Apache on the dev Mac.
 
+Both `npm run dev` and `npm start` load `./.env` when it exists
+(`node --env-file-if-exists`, no dotenv). `.env` is gitignored and holds only
+optional keys such as `OPENROUTER_API_KEY`. Shell variables win over `.env`, so
+`OPENROUTER_API_KEY= npm run dev` runs one session on the stub again (the
+marker recipe below needs the stub: the LLM stage only reads real images).
+
 Tests (built-in `node:test`, no test framework dependency):
 
 ```bash
@@ -74,7 +80,8 @@ behind them at `/api/admin/dashboard` and `/api/admin/audit`.
 upload ──► sha256 ──► duplicate check ──► store evidence
                                             │
                    QR stage (bonus) ────────┤
-                   OCR stage (primary) ─────┘
+                   OCR stage (primary) ─────┤   Vision, else LLM, else stub
+                   LLM fallback (optional) ─┘   only after Vision finds nothing
                                             ▼
                              src/decision.js :: recordSubmission
                              ├─ verdict computed server-side
@@ -95,6 +102,33 @@ upload ──► sha256 ──► duplicate check ──► store evidence
 All async work (evidence upload, OCR) finishes *before* `BEGIN`. The block
 between BEGIN and COMMIT is synchronous, so another request cannot interleave
 statements with it.
+
+### Optional LLM extraction (OpenRouter)
+
+`src/extraction/llm.js` sends the slip image (downscaled JPEG data URL) and any
+OCR text to a vision model on OpenRouter and asks for strict JSON
+`{"amount": number|null, "confidence": 0..1}`. Default model:
+`google/gemini-2.5-flash-lite` (override with `OPENROUTER_MODEL`).
+
+| Keys set | OCR stage | LLM role |
+|---|---|---|
+| neither | `StubOCRExtractor` (synthetic) | off |
+| `OPENROUTER_API_KEY` only | `LLMAmountExtractor` | primary, replaces the stub |
+| both | `VisionOCRExtractor` | fallback when Vision finds no amount (gets Vision's text as a hint) |
+| Vision only | `VisionOCRExtractor` | off |
+
+The LLM supplies a number and nothing else. The verdict is still computed
+in `decision.js` from config tolerance. The code reads only `amount` and
+`confidence` from the reply; it rejects non-positive values, values above
+`LLM_MAX_AMOUNT_THB` (default 1,000,000), and confidence below
+`LLM_MIN_CONFIDENCE` (default 0.5). The prompt marks the image and OCR text as
+untrusted data. Each attempt times out at 15 s, with at most one retry
+(429/5xx/network only, never after a timeout) inside a 20 s ceiling. Any
+failure becomes `UNREADABLE` and the upload still succeeds. The extractor label
+(`llm:<model>`) is stored in `extraction_detail`, in the audit row's
+`extractor` field, and `extraction_source` is `llm`. Measured on a rendered
+Thai slip: ~2.5–4 s and about $0.00015 per call (1,462 prompt + 19 completion
+tokens).
 
 ### QR is a bonus, not the answer
 
@@ -196,7 +230,10 @@ included for non-Docker builders.
 | `TEAM_MEMBERS` | no | Comma-separated Thai names |
 | `EXPENSE_CATEGORIES` | no | Comma-separated |
 | `MATCH_EPSILON_THB` / `MATCH_EPSILON_PCT` | no | Defaults `1.0` / `0.005` |
-| `GOOGLE_VISION_API_KEY` | for real OCR | Absent → `StubOCRExtractor` |
+| `GOOGLE_VISION_API_KEY` | for real OCR | Absent → LLM if `OPENROUTER_API_KEY` is set, else `StubOCRExtractor` |
+| `OPENROUTER_API_KEY` | no | Enables the LLM stage (primary without Vision, fallback with it). Counts as real OCR for `REQUIRE_REAL_PROVIDERS` |
+| `OPENROUTER_MODEL` | no | Vision-capable OpenRouter model id. Default `google/gemini-2.5-flash-lite` |
+| `LLM_MIN_CONFIDENCE` / `LLM_MAX_AMOUNT_THB` | no | Defaults `0.5` / `1000000` |
 | `GDRIVE_SA_JSON` | for Drive storage | Raw service-account JSON **or** its base64. Never a file in the repo |
 | `GDRIVE_FOLDER_ID` | for Drive storage | Folder id inside a **Shared Drive** |
 | `REQUIRE_REAL_PROVIDERS` | **yes in prod** | `1` → startup FAILS instead of running on stubs |
@@ -204,8 +241,9 @@ included for non-Docker builders.
 | `MAX_UPLOAD_BYTES` | no | Default 8 MB |
 | `LOG_LEVEL` | no | `debug` / `info` / `warning` / `error` / `silent` |
 
-`.env.example` lists every variable. The app reads the process environment
-only and does not load a `.env` file.
+`.env.example` lists every variable. The npm scripts load `./.env` if present
+for local use; on Railway the Dockerfile runs `node src/server.js` directly, so
+production reads real Variables only.
 
 ### 4.4 Two manual steps still blocked on you
 
@@ -266,7 +304,7 @@ src/
   decision.js        THE DECISION POINT: extract → verdict → insert → audit → commit
   providers.js       explicit provider selection + REQUIRE_REAL_PROVIDERS
   csv.js             CSV export dialect (BOM, minimal quoting, CRLF)
-  extraction/        base · amount-text · qr · qr-decode · vision · stub · pipeline
+  extraction/        base · amount-text · qr · qr-decode · vision · llm · stub · pipeline
   storage/           base · local · gdrive · google-auth
   slipverify/        base · null           (interface only; out of scope for v1)
   routes/            auth-routes · expenses · admin · errors · http

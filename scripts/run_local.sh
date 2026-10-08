@@ -1,6 +1,9 @@
 #!/usr/bin/env sh
 # Run the app locally on stubs — no Google credentials required.
 # Usage: npm run dev     (or: PORT=9000 npm run dev)
+# Optional keys (e.g. OPENROUTER_API_KEY) are read from ./.env if it exists.
+# Shell variables win over .env, so `OPENROUTER_API_KEY= npm run dev` turns the
+# LLM stage off for one run.
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -25,4 +28,4 @@ echo "ALLOW_INSECURE_DEFAULTS=$ALLOW_INSECURE_DEFAULTS  (local dev only)"
 echo "team passcode: $TEAM_PASSCODE   admin password: $ADMIN_PASSWORD"
 echo "open http://127.0.0.1:$PORT/"
 
-exec node --watch src/server.js
+exec node --env-file-if-exists=.env --watch src/server.js

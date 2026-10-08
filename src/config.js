@@ -7,6 +7,11 @@
 
 import { createLogger } from "./log.js";
 import { parsePyFloat, parsePyInt } from "../shared/numbers.js";
+import {
+  DEFAULT_MAX_AMOUNT_THB,
+  DEFAULT_MIN_CONFIDENCE,
+  DEFAULT_OPENROUTER_MODEL,
+} from "./extraction/llm.js";
 
 const logger = createLogger("pegasus.config");
 
@@ -101,6 +106,12 @@ export function loadSettings(env = process.env) {
     matchEpsilonPct,
 
     googleVisionApiKey: env.GOOGLE_VISION_API_KEY || null,
+    // OpenRouter vision LLM: primary amount source when Vision is absent,
+    // fallback after Vision otherwise. Unset = stage off.
+    openrouterApiKey: env.OPENROUTER_API_KEY || null,
+    openrouterModel: (env.OPENROUTER_MODEL || "").trim() || DEFAULT_OPENROUTER_MODEL,
+    llmMinConfidence: envFloat(env, "LLM_MIN_CONFIDENCE", DEFAULT_MIN_CONFIDENCE),
+    llmMaxAmountThb: envFloat(env, "LLM_MAX_AMOUNT_THB", DEFAULT_MAX_AMOUNT_THB),
     gdriveSaJson: env.GDRIVE_SA_JSON || null,
     gdriveFolderId: env.GDRIVE_FOLDER_ID || null,
     // When set, startup FAILS LOUDLY instead of silently falling back to stubs.

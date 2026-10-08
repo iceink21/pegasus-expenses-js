@@ -39,6 +39,7 @@ export const VERDICT_UI = Object.freeze({
 const SOURCE_LABEL = Object.freeze({
   qr: "QR (EMVCo tag 54)",
   ocr: "OCR",
+  llm: "AI (LLM)",
   none: "ไม่พบยอด",
 });
 

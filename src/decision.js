@@ -79,7 +79,7 @@ export async function recordSubmission(
     evidence = await providers.storage.store({ data: imageBytes, filename, contentType });
   }
 
-  // --- extraction: QR (bonus) -> OCR (workhorse) -------------------
+  // --- extraction: QR (bonus) -> OCR (workhorse) -> LLM (fallback) -
   const extraction = await providers.pipeline.run(imageBytes, contentType);
 
   // --- slip verification seam (no-op in v1) ------------------------
@@ -132,6 +132,7 @@ export async function recordSubmission(
         difference,
         tolerance,
         source: extraction.source,
+        extractor: extraction.extractor || null,
         extraction_detail: extraction.detail,
         ocr_provider: providers.ocrStage.name,
         using_stub_ocr: providers.usingStubOcr,
@@ -170,6 +171,7 @@ export async function recordSubmission(
     extracted_amount: extraction.amount,
     extraction_source: extractionSource,
     extraction_detail: extraction.detail,
+    extractor: extraction.extractor || null,
     difference,
     tolerance,
     duplicate_of_id: duplicateOfId,
