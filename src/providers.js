@@ -12,6 +12,7 @@ import { StubOCRExtractor } from "./extraction/stub.js";
 import { VisionOCRExtractor } from "./extraction/vision.js";
 import { createLogger } from "./log.js";
 import { NullSlipVerifier } from "./slipverify/null.js";
+import { EvidenceFolder } from "./storage/base.js";
 import { GoogleDriveStorage } from "./storage/gdrive.js";
 import { LocalDiskStorage } from "./storage/local.js";
 
@@ -67,6 +68,11 @@ function buildStorage(settings, notes, fetchImpl) {
     try {
       const storage = new GoogleDriveStorage(settings.gdriveSaJson, settings.gdriveFolderId, {
         fetchImpl,
+        folderOverrides: {
+          [EvidenceFolder.VERIFIED]: settings.gdriveFolderVerified,
+          [EvidenceFolder.NEEDS_REVIEW]: settings.gdriveFolderReview,
+          [EvidenceFolder.REJECTED]: settings.gdriveFolderRejected,
+        },
       });
       notes.push("GDRIVE_SA_JSON + GDRIVE_FOLDER_ID present -> GoogleDriveStorage");
       logger.info("Evidence storage: GoogleDriveStorage (Shared Drive service account)");

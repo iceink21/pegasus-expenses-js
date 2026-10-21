@@ -20,6 +20,8 @@
         <a href="/upload">ส่งสลิป</a>
         <a href="/my">รายการของฉัน</a>
         <a href="/admin" aria-current="page">หัวหน้าทีม</a>
+        <a href="/admin/members">สมาชิก</a>
+        <form method="post" action="/logout" class="nav-logout"><button type="submit">ออกจากระบบ</button></form>
       </nav>
     </div>
   </header>
@@ -33,7 +35,8 @@
       <h1 class="page-title">มุมมองหัวหน้าทีม</h1>
       <div class="actions">
         <a href="/admin/audit" class="btn btn-secondary btn-small">บันทึกตรวจสอบ</a>
-        <a href="/admin/export.csv" class="btn btn-primary btn-small">CSV</a>
+        <a href="/admin/export.csv" class="btn btn-secondary btn-small">CSV</a>
+        <a href="/admin/totals.xlsx" class="btn btn-primary btn-small">ดาวน์โหลด Excel</a>
       </div>
     </div>
     <div id="dashboard">

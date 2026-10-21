@@ -3,12 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>เข้าสู่ระบบหัวหน้าทีม — Pegasus</title>
+  <title>ออกจากระบบ — Pegasus</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anuphan:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="/css/app.css">
-  <script type="module" src="/js/pages/login.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -25,16 +24,12 @@
 
   <main class="wrap main" id="main">
     <div class="narrow">
-      <h1 class="page-title">รหัสหัวหน้าทีม</h1>
-      <p class="page-lede">สำหรับดูรายการทั้งหมด รายการที่ติดธง บันทึกการตรวจสอบ และดาวน์โหลด CSV</p>
-      <p class="notice notice-error" id="form-error" role="alert" hidden></p>
-      <form method="post" action="/admin/login" class="card stack" id="login-form">
-        <div class="field">
-          <label for="password">รหัสผู้ดูแล</label>
-          <input class="input" id="password" name="password" type="password" required autocomplete="current-password">
-        </div>
-        <button type="submit" class="btn btn-primary btn-block">เข้าสู่ระบบ</button>
+      <h1 class="page-title">ออกจากระบบ</h1>
+      <p class="page-lede">ออกจากระบบทุกอุปกรณ์ที่เข้าสู่ระบบด้วยบัญชีนี้อยู่</p>
+      <form method="post" action="/logout" class="card stack">
+        <button type="submit" class="btn btn-primary btn-block">ออกจากระบบ</button>
       </form>
+      <p class="mt small center"><a class="muted" href="/upload">ยกเลิก กลับไปหน้าส่งสลิป</a></p>
     </div>
   </main>
 

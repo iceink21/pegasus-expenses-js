@@ -1,5 +1,7 @@
-// Typed member names: normalization, validation, lookup-or-create, and the
-// guarantee that racing creates of one name produce one row.
+// Member display names: normalization, validation, the uniqueness of a name
+// across spellings, and the guarantee that racing creates produce one row.
+// Accounts are created by an admin (POST /api/admin/members); the typed-name
+// lookup-or-create below survives for the migration of legacy expense rows.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -7,9 +9,10 @@ import { Worker } from "node:worker_threads";
 
 import { HttpError } from "../src/http-error.js";
 import { memberNameKey, normalizeMemberName, parseMemberName } from "../src/members.js";
-import { query, startApp, stubSlip, TEAM_PASSCODE, teamClient, upload } from "./helpers.js";
+import { adminClient, ensureMember, query, startApp } from "./helpers.js";
 
-const MEMBERS_SQL = "SELECT * FROM members ORDER BY id";
+// Excludes the bootstrap admin every test app starts with.
+const MEMBERS_SQL = "SELECT * FROM members WHERE role = 'member' ORDER BY id";
 
 test("normalization: NFC, zero-width removed, whitespace collapsed, trimmed", () => {
   // Latin e + combining acute (U+0301) composes to é under NFC.
@@ -44,41 +47,48 @@ test("validation rejects empty, control/format characters and over-long names", 
   assert.equal(parseMemberName("ติ้ว\tนาย"), "ติ้ว นาย");
 });
 
-test("a new name creates a member and audits member.created", async (t) => {
+const createAccount = (admin, body) => admin.postJson("/api/admin/members", body);
+
+test("an admin-created account audits member.account_created, without the setup code", async (t) => {
   const app = await startApp(t);
-  await teamClient(app, "คูการ์");
-  const [member] = query(app.dbPath, MEMBERS_SQL);
+  const admin = await adminClient(app);
+  const response = await createAccount(admin, { name: "คูการ์", username: "cougar" });
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  const [member] = query(app.dbPath, "SELECT * FROM members WHERE username = 'cougar'");
   assert.equal(member.name, "คูการ์");
-  const [audit] = query(app.dbPath, "SELECT * FROM audit_log WHERE action = 'member.created'");
-  assert.equal(audit.subject_type, "member");
-  assert.equal(audit.subject_id, String(member.id));
-  assert.deepEqual(JSON.parse(audit.detail), { name: "คูการ์", source: "login" });
+  assert.equal(member.role, "member");
+  const [audit] = query(app.dbPath, "SELECT * FROM audit_log WHERE action = 'member.account_created' AND subject_id = ?", String(member.id));
+  assert.equal(audit.subject_type, "account");
+  assert.equal(audit.actor_name, "admin");
+  const detail = JSON.parse(audit.detail);
+  assert.deepEqual([detail.username, detail.name, detail.role, detail.source], ["cougar", "คูการ์", "member", "admin"]);
+  assert.ok(!audit.detail.includes(body.setup_code));
 });
 
-test("case, whitespace, NFC and zero-width variants reuse one member id", async (t) => {
+test("case, whitespace, NFC and zero-width variants of a name are one name", async (t) => {
   const app = await startApp(t);
-  for (const variant of ["José Tiw", "  jose\u0301   TIW ", "JOSÉ\u200B TIW", "josé\ttiw"]) {
-    const team = await teamClient(app, variant);
-    await upload(team, { payload: stubSlip("PEGASUS_STUB_AMOUNT=100.00", variant) });
+  const admin = await adminClient(app);
+  assert.equal((await createAccount(admin, { name: "José Tiw", username: "tiw" })).status, 201);
+  for (const [index, variant] of ["  jose\u0301   TIW ", "JOSÉ\u200B TIW", "josé\ttiw"].entries()) {
+    const response = await createAccount(admin, { name: variant, username: "tiw" + index });
+    assert.equal(response.status, 409, variant);
+    assert.deepEqual(await response.json(), { detail: "name_taken" });
   }
-  const members = query(app.dbPath, MEMBERS_SQL);
+  const members = query(app.dbPath, "SELECT * FROM members WHERE username LIKE 'tiw%'");
   assert.equal(members.length, 1);
-  assert.equal(members[0].name, "José Tiw", "the first spelling is kept as the display name");
-  const ids = query(app.dbPath, "SELECT DISTINCT member_id FROM expenses").map((row) => row.member_id);
-  assert.deepEqual(ids, [members[0].id]);
-  assert.equal(query(app.dbPath, "SELECT * FROM audit_log WHERE action = 'member.created'").length, 1);
+  assert.equal(members[0].name, "José Tiw");
 });
 
-test("simultaneous logins with one new name create one row", async (t) => {
+test("simultaneous creates of one username make one account", async (t) => {
   const app = await startApp(t);
-  const variants = ["นาย", " นาย", "นาย ", "นาย\u200B", "  นาย  "];
+  const admin = await adminClient(app);
   const responses = await Promise.all(
-    Array.from({ length: 20 }, (_, i) =>
-      app.client().postForm("/login", { passcode: TEAM_PASSCODE, member_name: variants[i % variants.length] }),
-    ),
+    Array.from({ length: 10 }, (_, i) => createAccount(admin, { name: "นาย " + i, username: i % 2 ? "NAI" : " nai " })),
   );
-  assert.ok(responses.every((response) => response.status === 303));
-  assert.equal(query(app.dbPath, MEMBERS_SQL).length, 1);
+  const statuses = responses.map((response) => response.status).sort();
+  assert.deepEqual(statuses, [201, ...Array(9).fill(409)]);
+  assert.equal(query(app.dbPath, "SELECT * FROM members WHERE username = 'nai'").length, 1);
 });
 
 test("racing creates from separate threads and connections produce one row", async (t) => {
@@ -129,9 +139,9 @@ test("racing creates from separate threads and connections produce one row", asy
   assert.equal(created.length, 1, "member.created rows " + JSON.stringify(created));
 });
 
-test("the database itself refuses a second row with the same key", async (t) => {
+test("the database itself refuses a second row with the same name key or username", async (t) => {
   const app = await startApp(t);
-  await teamClient(app, "ติ้ว");
+  await ensureMember(app, "ติ้ว", { username: "tiw" });
   const { DatabaseSync } = await import("node:sqlite");
   const db = new DatabaseSync(app.dbPath);
   try {
@@ -139,32 +149,41 @@ test("the database itself refuses a second row with the same key", async (t) => 
       () => db.prepare("INSERT INTO members (name, name_key, created_at) VALUES (?, ?, ?)").run("x", "ติ้ว", "t"),
       /UNIQUE constraint failed: members\.name_key/,
     );
+    assert.throws(
+      () => db.prepare("INSERT INTO members (name, name_key, created_at, username) VALUES (?, ?, ?, ?)").run("y", "y", "t", "tiw"),
+      /UNIQUE constraint failed: members\.username/,
+    );
+    assert.throws(
+      () => db.prepare("INSERT INTO members (name, name_key, created_at, role) VALUES (?, ?, ?, ?)").run("z", "z", "t", "root"),
+      /CHECK constraint failed/,
+    );
   } finally {
     db.close();
   }
 });
 
-test("invalid names are rejected at login with a Thai-mapped code", async (t) => {
+test("invalid names and usernames are rejected at account creation with Thai-mapped codes", async (t) => {
   const app = await startApp(t);
-  for (const [name, detail] of [
-    ["", "member_name_required"],
-    ["ก".repeat(61), "member_name_too_long"],
-    ["bad\u0007name", "member_name_invalid"],
+  const admin = await adminClient(app);
+  const before = query(app.dbPath, "SELECT COUNT(*) AS n FROM members")[0].n;
+  for (const [body, detail] of [
+    [{ name: "", username: "valid" }, "member_name_required"],
+    [{ name: "ก".repeat(61), username: "valid" }, "member_name_too_long"],
+    [{ name: "bad\u0007name", username: "valid" }, "member_name_invalid"],
+    [{ name: "ok", username: "ab" }, "username_invalid"],
+    [{ name: "ok", username: "ติ้ว" }, "username_invalid"],
+    [{ name: "ok", username: "has space" }, "username_invalid"],
+    [{ name: "ok", username: "x".repeat(33) }, "username_invalid"],
+    [{ name: "ok", username: "valid", role: "root" }, "invalid_role"],
   ]) {
-    const response = await app.client().postForm("/login", { passcode: TEAM_PASSCODE, member_name: name });
-    assert.equal(response.status, 400);
+    const response = await createAccount(admin, body);
+    assert.equal(response.status, 400, JSON.stringify(body));
     assert.deepEqual(await response.json(), { detail });
   }
-  assert.equal(query(app.dbPath, MEMBERS_SQL).length, 0);
+  assert.equal(query(app.dbPath, "SELECT COUNT(*) AS n FROM members")[0].n, before);
   const { errorMessage } = await import("../public/js/copy.js");
   assert.equal(errorMessage(400, "member_name_too_long"), "ชื่อยาวเกินไป (ไม่เกิน 60 ตัวอักษร)");
-});
-
-test("TEAM_MEMBERS is no longer a roster", async (t) => {
-  // Setting it has no effect: any valid typed name is accepted.
-  const app = await startApp(t, { TEAM_MEMBERS: "ติ้ว" });
-  await teamClient(app, "คนใหม่");
-  assert.deepEqual(query(app.dbPath, "SELECT name FROM members").map((row) => row.name), ["คนใหม่"]);
+  assert.match(errorMessage(400, "username_invalid"), /a–z/);
 });
 
 test("resolve and find normalize their input even when the caller did not", async (t) => {

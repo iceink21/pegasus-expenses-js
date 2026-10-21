@@ -7,10 +7,12 @@
 
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { test } from "node:test";
 
 import { VERDICT_UI } from "../public/js/copy.js";
-import { adminClient, MEMBERS, query, startApp, stubSlip, teamClient, upload } from "./helpers.js";
+import { adminClient, ensureMember, MEMBERS, query, startApp, stubSlip, teamClient, upload } from "./helpers.js";
 
 const EXPENSES_ORDERED = "SELECT * FROM expenses ORDER BY id";
 const AUDIT_FOR_EXPENSE =
@@ -109,7 +111,7 @@ test("UNREADABLE path is audited but not flagged", async (t) => {
   );
 });
 
-test("duplicate hash flags the row, reuses the evidence and writes the audit row", async (t) => {
+test("duplicate hash flags the row, stores its own copy for review and writes the audit row", async (t) => {
   const app = await startApp(t);
   const team = await teamClient(app);
   const payload = stubSlip("PEGASUS_STUB_AMOUNT=310.50", "dup");
@@ -127,7 +129,13 @@ test("duplicate hash flags the row, reuses the evidence and writes the audit row
   assert.notEqual(row.id, original.id);
   assert.equal(row.image_sha256, original.image_sha256);
   assert.equal(row.duplicate_of_id, original.id);
-  assert.equal(row.evidence_ref, original.evidence_ref);
+  // Its own file, in needs-review; the original stays in verified.
+  assert.notEqual(row.evidence_ref, original.evidence_ref);
+  assert.equal(original.evidence_folder, "verified");
+  assert.equal(row.evidence_folder, "needs-review");
+  assert.equal(row.review_status, "pending");
+  assert.ok(fs.existsSync(row.evidence_ref) && fs.existsSync(original.evidence_ref));
+  assert.equal(path.basename(path.dirname(row.evidence_ref)), "needs-review");
   assert.equal(row.flagged, 1);
   assert.ok(row.flag_reason.includes("duplicate_image"));
 
@@ -183,15 +191,50 @@ test("a member's member_name field is ignored; the session decides who submitted
   assert.equal(query(app.dbPath, "SELECT * FROM members WHERE name = ?", MEMBERS[1]).length, 0);
 });
 
-test("an admin upload needs a valid typed name", async (t) => {
+test("an admin uploads for an existing member by id only; nothing is created on upload", async (t) => {
   const app = await startApp(t);
   const admin = await adminClient(app);
-  const missing = await upload(admin, { member: "" });
-  assert.equal(missing.status, 422);
-  const bad = await upload(admin, { member: "a\u202Eb" });
-  assert.equal(bad.status, 400);
-  assert.equal(bad.body.detail, "member_name_invalid");
-  assert.equal(query(app.dbPath, EXPENSES_ORDERED).length, 0);
+  const target = await ensureMember(app, MEMBERS[1]);
+  const membersBefore = query(app.dbPath, "SELECT id FROM members ORDER BY id");
+
+  // A typed name is not a way to pick (or create) a member any more.
+  const typed = await upload(admin, {
+    memberId: target.id,
+    payload: stubSlip("PEGASUS_STUB_AMOUNT=100.00", "by-id"),
+    extra: { member_name: "คนที่ไม่มีอยู่" },
+  });
+  assert.equal(typed.status, 200);
+  assert.equal(typed.body.member_name, MEMBERS[1]);
+  assert.equal(lastExpense(app.dbPath).member_id, target.id);
+
+  // No member_id: the admin submits for themself.
+  const own = await upload(admin, { member: "", payload: stubSlip("PEGASUS_STUB_AMOUNT=100.00", "self") });
+  assert.equal(own.status, 200);
+  const [self] = query(app.dbPath, "SELECT id, name FROM members WHERE username = 'admin'");
+  assert.equal(lastExpense(app.dbPath).member_id, self.id);
+  assert.equal(own.body.member_name, self.name);
+
+  const unknown = await upload(admin, { memberId: 99999, payload: stubSlip("PEGASUS_STUB_AMOUNT=1.00", "nobody") });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.detail, "unknown_member");
+  const malformed = await upload(admin, { memberId: "abc", payload: stubSlip("PEGASUS_STUB_AMOUNT=1.00", "abc") });
+  assert.equal(malformed.status, 422);
+  assert.equal(malformed.body.detail, "invalid_member_id");
+
+  assert.deepEqual(query(app.dbPath, "SELECT id FROM members ORDER BY id"), membersBefore, "no member was created");
+  assert.equal(query(app.dbPath, EXPENSES_ORDERED).length, 2);
+});
+
+test("the admin upload form lists existing members by id, the admin's own first choice", async (t) => {
+  const app = await startApp(t);
+  await ensureMember(app, MEMBERS[0]);
+  const admin = await adminClient(app);
+  const form = await (await admin.get("/api/upload-form")).json();
+  assert.equal(form.detail_level, "admin");
+  const [self] = query(app.dbPath, "SELECT id FROM members WHERE username = 'admin'");
+  assert.equal(form.self_id, self.id);
+  assert.deepEqual(form.members.map((entry) => Object.keys(entry).sort()), [["id", "name"], ["id", "name"]]);
+  assert.ok(form.members.some((entry) => entry.name === MEMBERS[0]));
 });
 
 test("rejects an oversize file with 413", async (t) => {

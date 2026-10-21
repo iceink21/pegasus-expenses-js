@@ -10,6 +10,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { memberExpenseView } from "../src/views.js";
 import { adminClient, MEMBERS, query, startApp, stubSlip, teamClient, upload } from "./helpers.js";
 
 // Keys that would reveal the server's judgement or how it was reached.
@@ -32,6 +33,13 @@ const FORBIDDEN_KEYS = [
   "decision",
   "view",
   "using_stub_ocr",
+  // Evidence review: routing and the admin's decision are admin-only too.
+  "review_status",
+  "evidence_folder",
+  "approved_amount",
+  "reviewed_by",
+  "reviewed_at",
+  "review_note",
 ];
 // Words, case-insensitive, anywhere in the serialized body.
 const FORBIDDEN_WORDS = /match|unreadable|duplicate|flag|toleran|differen|extract|verdict|stub|ocr|llm|qr/i;
@@ -171,4 +179,24 @@ test("an admin upload still returns the full decision", async (t) => {
   assert.equal(body.decision.verdict, "MISMATCH");
   assert.equal(body.decision.difference, 270);
   assert.equal(body.member_name, "ผู้ช่วยใหม่");
+});
+
+test("the member allow-list in views.js is exactly the six submitted fields", async (t) => {
+  const app = await startApp(t);
+  const { body } = await upload(await teamClient(app), {
+    claimed: "100.00",
+    payload: stubSlip("PEGASUS_STUB_AMOUNT=1.00", "allow-list"),
+  });
+  // A full stored row, every review column populated.
+  const [row] = query(app.dbPath, "SELECT * FROM expenses WHERE id = ?", body.expense.id);
+  const full = { ...row, review_status: "approved", approved_amount: 1, reviewed_by: "admin", reviewed_at: "x", review_note: "n" };
+  assert.ok("evidence_folder" in full && full.evidence_folder === "needs-review");
+  assert.deepEqual(Object.keys(memberExpenseView(full)).sort(), [
+    "category",
+    "claimed_amount",
+    "created_at",
+    "id",
+    "member_name",
+    "note",
+  ]);
 });

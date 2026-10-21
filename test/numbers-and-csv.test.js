@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import { flagLabels, formatDt, formatThb } from "../public/js/copy.js";
 import { parsePyFloat, parsePyInt, pyRound2, toAsciiDigits } from "../shared/numbers.js";
-import { csvField, toCsv } from "../src/csv.js";
+import { csvField, neutraliseFormula, toCsv } from "../src/csv.js";
 import { parseAmount } from "../src/routes/expenses.js";
 
 test("pyRound2 matches Python round(x, 2), ties to even on the exact value", () => {
@@ -72,4 +72,29 @@ test("CSV uses minimal quoting, CRLF and a BOM", () => {
   const csv = toCsv([{ id: 1, member_name: "ติ้ว", note: "line1\nline2", flagged: 0 }]);
   assert.ok(csv.startsWith("﻿id,created_at,member_name,"));
   assert.ok(csv.includes("\r\n1,,ติ้ว,,\"line1\nline2\",,,,,0,"));
+});
+
+test("CSV neutralises formula-looking text cells but not numbers", () => {
+  const csv = toCsv([
+    {
+      id: 7,
+      member_name: "@SUM(1)",
+      category: "+cmd",
+      note: "=HYPERLINK(\"http://evil\",\"x\")",
+      claimed_amount: -5,
+      extracted_amount: -12.5,
+      flag_reason: "-1",
+      review_note: "\tlead tab",
+      extraction_detail: "\rcr",
+      reviewed_by: "admin",
+    },
+  ]);
+  const [, line] = csv.split("\r\n");
+  assert.ok(line.startsWith("7,,'@SUM(1),'+cmd,\"'=HYPERLINK(\"\"http://evil\"\",\"\"x\"\")\",-5,-12.5,"), line);
+  assert.ok(line.includes(",'-1,"), "flag_reason is text");
+  assert.ok(line.includes(",admin,"));
+  assert.ok(csv.includes("'\tlead tab"));
+  assert.equal(neutraliseFormula("ค่าน้ำมัน"), "ค่าน้ำมัน");
+  assert.equal(neutraliseFormula(-5), -5);
+  assert.equal(neutraliseFormula(null), null);
 });

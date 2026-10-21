@@ -4,27 +4,24 @@
 // and no request field can influence one — the server alone decides, in
 // decision.js.
 //
-// Who submits: a team session acts as the member bound to it at login; any
-// member_name field it sends is ignored. An admin session submits on behalf of
-// a typed name, which is resolved (or created) here.
+// Who submits: a member session acts as its own account; any member_name or
+// member_id field it sends is ignored. An admin session submits for an
+// EXISTING member chosen by member_id (default: the admin themself). Uploading
+// never creates a member — accounts are created on the members page.
 //
-// What comes back: a team session gets the member-safe projection from
+// What comes back: a member session gets the member-safe projection from
 // views.js and nothing about the verdict. An admin session gets everything.
 
 import express from "express";
 import multer from "multer";
 
-import { memberPrincipal, requireTeam } from "../auth.js";
+import { loadAccount } from "../accounts.js";
+import { memberPrincipal, requireMember } from "../auth.js";
 import { statement } from "../db/connection.js";
-import { SELECT_EXPENSES_BY_MEMBER_ID } from "../db/sql.js";
+import { SELECT_EXPENSES_BY_MEMBER_ID, SELECT_MEMBER_CHOICES } from "../db/sql.js";
 import { decisionView, loadExpense, recordSubmission } from "../decision.js";
 import { HttpError } from "../http-error.js";
-import {
-  findMemberByName,
-  listMemberNames,
-  parseMemberName,
-  resolveOrCreateMember,
-} from "../members.js";
+import { findMemberByName, listMemberNames } from "../members.js";
 import { parsePyFloat, pyRound2 } from "../../shared/numbers.js";
 import { Action, requireAccess, requirePermission } from "../permissions.js";
 import { memberExpenseView } from "../views.js";
@@ -32,9 +29,9 @@ import { enforce, queryString, requiredField, sendPage } from "./http.js";
 
 const RECENT_LIMIT = 20;
 const NUMERIC_CLEANUP = /[,\s฿]/gu;
-const MAX_AMOUNT = 10_000_000;
-const NOTE_MAX_CHARS = 500;
-const INTEGER_ID = /^[+-]?\d+$/;
+export const MAX_AMOUNT = 10_000_000;
+export const NOTE_MAX_CHARS = 500;
+export const INTEGER_ID = /^[+-]?\d+$/;
 
 export function parseAmount(raw) {
   const text = String(raw ?? "").replace(NUMERIC_CLEANUP, "");
@@ -67,10 +64,10 @@ export function createExpensesRouter(ctx) {
     ["/my", "my.html"],
     ["/expenses/:id", "expense.html"],
   ]) {
-    router.get(path, requireTeam(ctx, "page"), (req, res) => sendPage(res, page));
+    router.get(path, requireMember(ctx, "page"), (req, res) => sendPage(res, page));
   }
 
-  router.get("/api/upload-form", requireTeam(ctx, "api"), (req, res) => {
+  router.get("/api/upload-form", requireMember(ctx, "api"), (req, res) => {
     const principal = memberPrincipal(req, settings);
     if (!principal.isAdmin) {
       res.json({ detail_level: "member", member: { name: principal.name }, categories: settings.categories });
@@ -79,14 +76,15 @@ export function createExpensesRouter(ctx) {
     res.json({
       detail_level: "admin",
       member: null,
-      // Names only, behind the admin session: suggestions for the name box.
-      member_names: listMemberNames(db),
+      // Existing members to submit for; the admin's own id is the default.
+      members: statement(db, SELECT_MEMBER_CHOICES).all().map((row) => ({ id: Number(row.id), name: String(row.name) })),
+      self_id: principal.memberId,
       categories: settings.categories,
       using_stub_ocr: providers.usingStubOcr,
     });
   });
 
-  router.post("/upload", requireTeam(ctx, "api"), slipUpload, async (req, res) => {
+  router.post("/upload", requireMember(ctx, "api"), slipUpload, async (req, res) => {
     const category = requiredField(req.body, "category");
     const claimedRaw = requiredField(req.body, "claimed_amount");
     if (!req.file) throw new HttpError(422, "missing_field", { field: "slip" });
@@ -101,17 +99,15 @@ export function createExpensesRouter(ctx) {
 
     enforce(() => requirePermission(db, principal, Action.EXPENSE_CREATE));
 
-    let member;
+    let member = { id: principal.memberId, name: principal.name };
     if (principal.isAdmin) {
-      const name = parseMemberName(requiredField(req.body, "member_name"));
-      member = resolveOrCreateMember(db, name, {
-        actorKind: principal.kind,
-        actorName: principal.name,
-        clientIp: principal.clientIp,
-        source: "admin_upload",
-      });
-    } else {
-      member = { id: principal.memberId, name: principal.name };
+      const raw = typeof req.body.member_id === "string" ? req.body.member_id.trim() : "";
+      if (raw !== "") {
+        if (!INTEGER_ID.test(raw)) throw new HttpError(422, "invalid_member_id");
+        const chosen = loadAccount(db, Number(raw));
+        if (!chosen) throw new HttpError(400, "unknown_member");
+        member = { id: chosen.id, name: chosen.name };
+      }
     }
 
     const note = typeof req.body.note === "string" ? req.body.note : "";
@@ -148,7 +144,7 @@ export function createExpensesRouter(ctx) {
     });
   });
 
-  router.get("/api/my", requireTeam(ctx, "api"), (req, res) => {
+  router.get("/api/my", requireMember(ctx, "api"), (req, res) => {
     const principal = memberPrincipal(req, settings);
     enforce(() => requirePermission(db, principal, Action.EXPENSE_READ_OWN));
     if (!principal.isAdmin) {
@@ -170,7 +166,7 @@ export function createExpensesRouter(ctx) {
     });
   });
 
-  router.get("/api/expenses/:id", requireTeam(ctx, "api"), (req, res) => {
+  router.get("/api/expenses/:id", requireMember(ctx, "api"), (req, res) => {
     if (!INTEGER_ID.test(req.params.id)) throw new HttpError(422, "invalid_id");
     const principal = memberPrincipal(req, settings);
     const row = loadExpense(db, Number(req.params.id));

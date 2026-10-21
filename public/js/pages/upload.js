@@ -1,7 +1,7 @@
 // Upload form: the browser sends the image and the claimed amount only. The
 // server decides the verdict and never tells a member what it was; this page
-// just moves on to the confirmation. A member submits as the name they logged
-// in with; an admin types the name to submit for.
+// just moves on to the confirmation. A member submits as their own account;
+// an admin picks an existing member (themself by default).
 
 import { getJson, postForm } from "../api.js";
 import { errorMessage } from "../copy.js";
@@ -30,12 +30,14 @@ loadInto(main, async () => {
     );
     identity.hidden = false;
   } else {
-    const input = document.getElementById("member_name");
-    document.getElementById("member-names").replaceChildren(
-      ...(config.member_names ?? []).map((name) => h("option", { value: name })),
+    const select = document.getElementById("member_id");
+    select.replaceChildren(
+      ...(config.members ?? []).map((member) =>
+        h("option", { value: String(member.id), selected: member.id === config.self_id }, member.name),
+      ),
     );
-    input.disabled = false;
-    input.required = true;
+    select.disabled = false;
+    select.required = true;
     document.getElementById("member-field").hidden = false;
   }
   showStubBanner(Boolean(config.using_stub_ocr));

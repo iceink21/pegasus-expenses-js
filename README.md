@@ -21,8 +21,17 @@ time: SQLite is built into Node, and `sharp` ships a prebuilt libvips.
 cd ~/pegasus-expenses-js
 npm install
 npm run dev
-# -> http://127.0.0.1:8811/   team passcode: pegasus-dev   admin: admin-dev
+# -> http://127.0.0.1:8811/   first login: username admin, password admin-dev-password
 ```
+
+On a fresh `./data/pegasus.db` the first start creates the admin account
+(username `admin`) from `ADMIN_PASSWORD` (the dev script sets
+`admin-dev-password`). Log in with it, set your own password when asked, then
+add members on **สมาชิก** (`/admin/members`): each new account comes with a
+one-time setup code that its owner types as the password at `/login`, after
+which they choose their own password. A database that already has an admin
+ignores `ADMIN_PASSWORD`; if you are locked out locally, run
+`npm run admin:reset -- admin` to print a fresh setup code.
 
 `npm run dev` runs `scripts/run_local.sh`. That script fills in dev defaults,
 binds to `127.0.0.1`, and restarts on source changes (`node --watch`). Override
@@ -49,9 +58,12 @@ text file:
 ```bash
 printf 'PEGASUS_STUB_AMOUNT=980.00\n' > /tmp/slip.jpg
 
+# Log in as an account that has a password (e.g. the admin after its first
+# password change; an admin upload goes to the admin's own name unless the
+# form also sends -F "member_id=<id>").
 J=/tmp/cookies.txt
-curl -s -c $J -b $J --data-urlencode "passcode=pegasus-dev" \
-  --data-urlencode "member_name=ติ้ว" http://127.0.0.1:8811/login
+curl -s -c $J -b $J --data-urlencode "username=admin" \
+  --data-urlencode "password=<your password>" http://127.0.0.1:8811/login
 curl -s -c $J -b $J -X POST http://127.0.0.1:8811/upload \
   -F "category=อะไหล่โดรน" \
   -F "claimed_amount=1250.00" -F "note=test" \
@@ -60,10 +72,10 @@ curl -s -c $J -b $J -X POST http://127.0.0.1:8811/upload \
 
 The claim is 1250 and the slip reads 980, so the verdict is `MISMATCH`. The
 expense row is flagged, and an `expense.decision.mismatch` audit row is written.
-The member's JSON response does **not** say so: it is
+A member's JSON response does **not** say so: it is
 `{"status":"received","expense":{id, created_at, member_name, category, note, claimed_amount},"result_url":…}`
-for every outcome. Log in at `/admin/login` and read `/api/expenses/<id>` to
-see the verdict.
+for every outcome (an admin session gets the full decision). As an admin, read
+`/api/expenses/<id>` to see the verdict.
 Markers:
 
 | marker in the uploaded bytes | result |
@@ -73,7 +85,7 @@ Markers:
 | neither | a deterministic synthetic amount derived from the image hash |
 
 Upload the same file twice to see the duplicate-hash flag. The admin view is at
-`/admin` (password `admin-dev`), the audit log at `/admin/audit`, and the JSON
+`/admin` (an admin account), the audit log at `/admin/audit`, and the JSON
 behind them at `/api/admin/dashboard` and `/api/admin/audit`.
 
 ---
@@ -81,18 +93,19 @@ behind them at `/api/admin/dashboard` and `/api/admin/audit`.
 ## 2. How a verdict is decided
 
 ```
-upload ──► sha256 ──► duplicate check ──► store evidence
-                                            │
-                   QR stage (bonus) ────────┤
-                   OCR stage (primary) ─────┤   Vision, else LLM, else stub
-                   LLM fallback (optional) ─┘   only after Vision finds nothing
-                                            ▼
-                             src/decision.js :: recordSubmission
-                             ├─ verdict computed server-side
-                             ├─ BEGIN
-                             ├─ expense row INSERT
-                             ├─ audit row(s) INSERT      ← same transaction
-                             └─ COMMIT
+upload ──► sha256 ──► duplicate check
+                          │
+       QR stage (bonus) ──┤
+    OCR stage (primary) ──┤   Vision, else LLM, else stub
+LLM fallback (optional) ──┘   only after Vision finds nothing
+                          ▼
+             src/decision.js :: recordSubmission
+             ├─ verdict computed server-side
+             ├─ routeFolder(verdict, flagged) ─► store evidence in that folder
+             ├─ BEGIN
+             ├─ expense row INSERT (review_status, evidence_folder)
+             ├─ audit row(s) INSERT      ← same transaction
+             └─ COMMIT
 ```
 
 * **MATCH** when `|claimed − extracted| ≤ max(MATCH_EPSILON_THB, claimed × MATCH_EPSILON_PCT)`.
@@ -103,7 +116,41 @@ upload ──► sha256 ──► duplicate check ──► store evidence
 * The browser posts only the image and the claimed amount. It cannot assert a
   verdict, and extra form fields are ignored (a test covers this).
 
-All async work (evidence upload, OCR) finishes *before* `BEGIN`. The block
+### Evidence folders and the admin review
+
+The verdict picks the folder, server-side:
+
+| Outcome | Folder | `review_status` |
+|---|---|---|
+| MATCH, no flag | `verified` | `verified` |
+| MISMATCH, UNREADABLE, any duplicate (MATCH + duplicate too) | `needs-review` | `pending` |
+| admin approves a pending row | moved to `verified` | `approved` (+ `approved_amount`) |
+| admin rejects a pending row | moved to `rejected` | `rejected` |
+
+Folders are flat; the stored name starts with the member id (`M3_<stamp>_<rand>_<name>`).
+Local storage uses `<LOCAL_UPLOAD_DIR>/verified|needs-review|rejected`; Drive
+uses `Verified` / `Needs-Review` / `Rejected` under `GDRIVE_FOLDER_ID`
+(found or created on first use, or set with `GDRIVE_FOLDER_VERIFIED/_REVIEW/_REJECTED`).
+A duplicate stores its own copy. Rows from before routing keep their file
+where it was (`evidence_folder = legacy`); old duplicates may still share their
+original's file, and a review of one copies that file instead of moving it.
+
+`POST /api/admin/expenses/:id/review` with `{decision: "approve"|"reject",
+approved_amount?, note?}` reviews a `pending` row (else 409 `not_pending`).
+Approve needs `approved_amount` (same rules as the upload form). The file is
+moved first; then one transaction re-checks the row is still pending, writes
+the review and the `expense.review.approved|rejected` audit row (claimed vs
+approved amount, folders, note). `claimed_amount` and `verdict` are never
+changed. If the move fails, `expense.review.move_failed` is audited, the row
+stays pending, and the response is 502. If the transaction fails after the
+move, the move is undone and `expense.review.tx_failed` is audited; a review
+that loses a race is undone and audited as `expense.review.conflict` (409).
+
+Totals (dashboard and `/admin/totals.xlsx`, one SQL aggregate in
+`src/db/sql.js`): claimed = everything not rejected; verified = auto-verified
+claims + approved amounts; pending and rejected are claimed amounts.
+
+All async work (OCR, evidence upload) finishes *before* `BEGIN`. The block
 between BEGIN and COMMIT is synchronous, so another request cannot interleave
 statements with it.
 
@@ -154,43 +201,126 @@ written in middleware or a response hook. Audited:
 
 - every MATCH / MISMATCH / UNREADABLE
 - every duplicate-hash hit
+- every admin review (approved / rejected) and every failed evidence move
 - every permission or scope denial (403)
-- every request a session gate refuses: no session, or a team session on an
-  admin route
-- every failed or successful passcode attempt
-- every logout
+- every request a session gate refuses (no/invalid/revoked session, disabled
+  account, a member on an admin route, a session that must change its
+  password first) and every cross-site POST (CSRF)
+- every login attempt, success or failure with its reason (`bad_credentials`,
+  `locked`, `rate_limited`, `disabled`, `csrf`), every lockout, logout,
+  password change and setup code issued — never the password or the code
+- every account change: created, disabled/enabled, unlocked, role, rename
 - every admin view and CSV export
 
 ---
 
 ## 3. Auth model
 
-Auth is a shared team passcode plus a typed name. There are **no** per-user
-accounts:
+Every person has their own account: a row in `members` with a username and a
+password. The admin is a member too (role `admin`), so their own expenses
+appear in totals and the Excel export like anyone else's. There is no
+self-registration and no shared passcode.
 
-1. A visitor types their name and the team passcode. The passcode is checked
-   first; then the name is normalized (Unicode NFC, zero-width characters
-   removed, whitespace collapsed, trimmed; 1–60 characters, no control or
-   format characters) and matched case-insensitively against the `members`
-   table. An unknown name creates a member (audited as `member.created`).
-2. The member id is sealed into the signed session cookie (HMAC-SHA256,
-   HttpOnly, SameSite=Lax, Secure in production, 12 h max age). Uploads,
-   "my expenses" and the scope check all use that id; no request field can
-   change it. To act as someone else, log out and log in again.
-3. Sessions issued before typed names (no member id) are sent back to log in.
+- **Login** (`POST /login`, one form for everyone): username + password. The
+  username is ASCII `[a-z0-9._-]{3,32}`, matched case-insensitively. The role
+  on the account decides what the session may do. Unknown username and wrong
+  password get the same 401 body and cost the same one scrypt verification.
+- **Passwords**: `scrypt` (node:crypto, N=2^15, r=8, p=1, 16-byte salt, 64-byte
+  key), stored as `scrypt$N$r$p$salt$key`, compared with `timingSafeEqual`.
+  Policy: 10–128 characters, not the username, not on a short common-password
+  list; no composition rules.
+- **New accounts and resets**: an admin creates the account (username, display
+  name, role) on `/admin/members` and gets a **one-time setup code** in that
+  response only (10 characters from an unambiguous alphabet, ~49 bits, valid
+  72 h, single use, stored as a scrypt hash). Its owner logs in with the
+  username and the code and must then set a password; until they do, the
+  session reaches only `/account/password` and logout. "Reset password" is the
+  same thing: a new setup code, which clears the old password and ends every
+  session of that account.
+- **Sessions**: a signed cookie (HMAC-SHA256, 12 h, HttpOnly, SameSite=Lax,
+  Secure in production with the `__Host-` name prefix) carrying the account id,
+  role and the account's `session_version`. The server reloads the account on
+  every request and refuses the cookie when the account is missing or disabled,
+  or its role or session version changed. Logout (a POST), a password change or
+  reset, disabling and a role change bump the version, so they end the
+  account's sessions on every device at once. A password change re-issues the
+  cookie for the device that made it.
+- **Brute force**: at most `LOGIN_RATE_LIMIT_ATTEMPTS` (10) `POST /login` per
+  client IP per `LOGIN_RATE_LIMIT_WINDOW_SECONDS` (300) → 429. Per account,
+  `LOCKOUT_THRESHOLD` (5) consecutive failures lock it for
+  `LOCKOUT_BASE_SECONDS` (15 min), doubling with each further lockout up to
+  `LOCKOUT_MAX_SECONDS` (24 h); a successful login resets this, and an admin
+  can unlock. A locked account answers 423 even to the right password.
+- **CSRF**: every POST/PUT/PATCH/DELETE must come from this app's origin
+  (`Origin` header, or `Sec-Fetch-Site: same-origin` when there is no Origin);
+  cross-site requests get 403 and an audit row. Requests with neither header
+  come from non-browser clients and pass, since those cannot carry a victim's
+  cookies. The expected origin is `PUBLIC_ORIGIN` when set, else the request's
+  Host (plus the scheme from `X-Forwarded-Proto` when a trusted proxy sends it).
+- **Admin safety**: the last active admin cannot be disabled or demoted, and an
+  admin cannot disable themself.
+- **Usernames** can be changed by an admin (e.g. migrated `member<id>`
+  placeholders); a change ends that account's sessions and is audited
+  `member.username_changed` with the old and new name.
+- **Client IP** (audit rows and the login rate limit): the socket peer, unless
+  the peer is in `TRUSTED_PROXY_IPS`. From a trusted proxy it is the
+  `CLIENT_IP_HEADER` value when that is set (Fly: `fly-client-ip`, which Fly's
+  edge sets itself), otherwise the **rightmost** `X-Forwarded-For` entry — the
+  one the proxy appended. Entries to its left come from the client and are
+  ignored, so a forged `X-Forwarded-For` can neither pick an audit IP nor get a
+  fresh rate-limit bucket.
+- **Recovery**: `npm run admin:reset -- <username> [--promote]` (on Fly:
+  `fly ssh console -C "node scripts/admin-reset.js <username>"`) prints a new
+  setup code once, unlocks and re-enables the account, and audits the reset
+  without the code.
 
-A separate **admin password** opens the team lead view: all expenses, flags,
-the audit log, and CSV export. Both secrets are compared as SHA-256 digests with
-`crypto.timingSafeEqual`.
+### First admin (bootstrap)
+
+On a start where the database has **no** admin account, the app creates one:
+username `admin`, display name `admin` (rename it on the members page), with
+`ADMIN_PASSWORD` as its password and a forced change at first login. From then
+on `ADMIN_PASSWORD` is ignored (a one-line notice says so). `TEAM_PASSCODE` is
+no longer read; if it is still set, startup logs a deprecation warning.
 
 ### Startup guard on default secrets
 
-`TEAM_PASSCODE`, `ADMIN_PASSWORD` and `SESSION_SECRET` have defaults that are
-**published in this repo**. The app **refuses to start** while any of them is
-still at its default, and the error names the offending variables. Set
+`SESSION_SECRET` and `ADMIN_PASSWORD` have defaults that are **published in
+this repo**. The app **refuses to start** while `SESSION_SECRET` is at its
+default, or while `ADMIN_PASSWORD` is at its default *and would be used* (no
+admin exists yet). The error names the offending variables. Set
 `ALLOW_INSECURE_DEFAULTS=1` to bypass it for local development (`run_local.sh`
 does this for you). The same flag drives the `COOKIE_SECURE` default: cookies
 are Secure unless you are explicitly in dev.
+
+### Cutover from the shared passcode (existing database)
+
+What happens on the first start of this version against an existing database:
+every existing member keeps their id, name and every expense link, and gets a
+placeholder username `member<id>` with **no password** — nobody can log in as
+them until an admin issues a setup code. All old session cookies stop working
+(new token format). The first admin is bootstrapped from `ADMIN_PASSWORD`.
+
+Fly.io, in this order:
+
+1. Make sure `ADMIN_PASSWORD` is set to a strong value you know (it becomes the
+   first admin's temporary password): `fly secrets set ADMIN_PASSWORD=...`
+   (skip if it is already set and you know it). Keep `SESSION_SECRET` as is.
+2. Deploy. Everyone currently logged in is logged out.
+3. Log in at `/login` as `admin` with `ADMIN_PASSWORD`, set your own password,
+   then rename the account to your real name on `/admin/members`.
+4. For each existing member on `/admin/members` (placeholder username
+   `member<id>`): first click **เปลี่ยนชื่อผู้ใช้** and give them a real
+   username (same rules as new accounts; 409 if taken), then click
+   **ออกรหัสตั้งค่า** and send them the username and code privately. They log
+   in and choose a password. Their id, name and expenses do not change.
+5. Unset the retired secret: `fly secrets unset TEAM_PASSCODE`. Optionally
+   `fly secrets unset ADMIN_PASSWORD` too — it is never read again once an
+   admin exists.
+
+What members experience: the next visit shows a username/password form instead
+of name + team passcode; until the admin sends their setup code they cannot log
+in; after the code they set a password once and carry on as before, seeing the
+same expenses.
 
 ### Members never see the verdict
 
@@ -202,18 +332,13 @@ duplicate link or extractor detail; the stub-mode banner is admin-only too.
 The verdict is still computed, stored, flagged and audited exactly as before,
 and the admin sees all of it (dashboard, detail, audit log, CSV).
 
-### What "member" actually means
+### What "member" means now
 
-The member id in the session is a real boundary **between sessions**, but it
-is **not an identity**. Anyone with the team passcode can type another
-member's name at login and get a session as that member: they would see that
-member's "my expenses" list and could submit in their name. Because of the
-section above, what they see is only what was typed in (amounts, categories,
-notes, times); verdicts and flags stay admin-only. Every login is audited
-with the name and client IP, so impersonation is traceable after the fact,
-not prevented. A typo at login creates a new member rather than an error;
-the admin sees every member on the dashboard. Real isolation needs per-user
-accounts, which are out of scope (§7).
+The member id in the session is an identity boundary: it comes from an account
+only that person can log in to, and nothing in a request can change it. A
+member sees only their own expenses and none of the verdict fields above; an
+admin sees everything. An admin can still upload on a member's behalf
+(choosing an existing member by id), which is audited with the admin as actor.
 
 ---
 
@@ -247,11 +372,17 @@ included for non-Docker builders.
 |---|---|---|
 | `DB_PATH` | **yes** | Inside the mounted Volume, e.g. `/data/pegasus.db` |
 | `LOCAL_UPLOAD_DIR` | if using local storage | Also inside the Volume |
-| `TEAM_PASSCODE` | **yes** | Shared team passcode |
-| `ADMIN_PASSWORD` | **yes** | Team-lead password, different from the above |
-| `SESSION_SECRET` | **yes** | `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"` |
+| `ADMIN_PASSWORD` | **first start only** | Temporary password of the bootstrap `admin` account, used only while no admin exists (must be changed at first login). Ignored afterwards |
+| `SESSION_SECRET` | **yes** | `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`. Changing it logs everyone out |
+| `TEAM_PASSCODE` | **retired** | No longer read; startup warns while it is set |
+| `PUBLIC_ORIGIN` | no | e.g. `https://pegasus-uav-expenses-th.fly.dev`. Pins the CSRF origin check; unset = the request's Host |
+| `LOGIN_RATE_LIMIT_ATTEMPTS` / `LOGIN_RATE_LIMIT_WINDOW_SECONDS` | no | Per-IP login attempts per window. Defaults `10` / `300` |
+| `LOCKOUT_THRESHOLD` / `LOCKOUT_BASE_SECONDS` / `LOCKOUT_MAX_SECONDS` | no | Per-account lockout. Defaults `5` / `900` / `86400` |
+| `SETUP_CODE_TTL_SECONDS` | no | Setup code lifetime. Default `259200` (72 h) |
+| `PASSWORD_SCRYPT_N` | no | scrypt cost. Default `32768`; lower it only in tests |
 | `COOKIE_SECURE` | no | Defaults to `1` unless `ALLOW_INSECURE_DEFAULTS=1` |
-| `TRUSTED_PROXY_IPS` | **yes on Railway** | `*` trusts `X-Forwarded-For` from Railway's edge. Without it, every audit row logs the proxy's IP. `*` is only safe when nothing but the proxy can reach the port |
+| `TRUSTED_PROXY_IPS` | **yes on Railway/Fly** | `*` trusts forwarding headers from the platform edge (rightmost `X-Forwarded-For` entry, `X-Forwarded-Proto`). Without it, every audit row logs the proxy's IP and all clients share one login rate-limit bucket. `*` is only safe when nothing but the proxy can reach the port |
+| `CLIENT_IP_HEADER` | **yes on Fly** | `fly-client-ip` (set in `fly.toml`). Header the trusted proxy sets to the real client IP; preferred over `X-Forwarded-For`, read only from a trusted peer |
 | `EXPENSE_CATEGORIES` | no | Comma-separated |
 | `MATCH_EPSILON_THB` / `MATCH_EPSILON_PCT` | no | Defaults `1.0` / `0.005` |
 | `GOOGLE_VISION_API_KEY` | for real OCR | Absent → LLM if `OPENROUTER_API_KEY` is set, else `StubOCRExtractor` |
@@ -260,6 +391,7 @@ included for non-Docker builders.
 | `LLM_MIN_CONFIDENCE` / `LLM_MAX_AMOUNT_THB` | no | Defaults `0.5` / `1000000` |
 | `GDRIVE_SA_JSON` | for Drive storage | Raw service-account JSON **or** its base64. Never a file in the repo |
 | `GDRIVE_FOLDER_ID` | for Drive storage | Folder id inside a **Shared Drive** |
+| `GDRIVE_FOLDER_VERIFIED` / `GDRIVE_FOLDER_REVIEW` / `GDRIVE_FOLDER_REJECTED` | no | Existing folder ids for the routed folders. Unset → `Verified` / `Needs-Review` / `Rejected` are found or created under `GDRIVE_FOLDER_ID` |
 | `REQUIRE_REAL_PROVIDERS` | **yes in prod** | `1` → startup FAILS instead of running on stubs |
 | `ENABLE_QR_STAGE` | no | `0` skips the QR stage |
 | `MAX_UPLOAD_BYTES` | no | Default 8 MB |
@@ -302,8 +434,11 @@ both be `false`.
 
 ### 4.5 Security checklist before sharing the link
 
-- [ ] Strong `TEAM_PASSCODE` and a *different* strong `ADMIN_PASSWORD`
+- [ ] Strong `ADMIN_PASSWORD` for the first start, changed at first login
 - [ ] Random `SESSION_SECRET` (32 bytes)
+- [ ] `TEAM_PASSCODE` unset (retired)
+- [ ] Every person has their own account; setup codes sent privately, not in
+      a group chat
 - [ ] App served over HTTPS (Railway default); leave `COOKIE_SECURE` unset or `1`
 - [ ] `REQUIRE_REAL_PROVIDERS=1`
 - [ ] Volume attached and `DB_PATH` pointing into it
@@ -317,30 +452,36 @@ both be `false`.
 ```
 src/
   server.js          process entry: buildApp(process.env) + listen
-  app.js             guard → database → providers → routes
+  app.js             database → guard → admin bootstrap → providers → routes
   config.js          env-driven settings, epsilon tolerance, startup guard
   db/sql.js          schema + every statement as a module-level constant
   db/connection.js   node:sqlite handle, prepared-statement cache, transactions
   audit.js           audit writes, called at decision points
-  session.js         signed timestamped session token + cookie helpers
-  auth.js            constant-time secret check, client IP, audited session gates
+  session.js         signed timestamped session token {uid, role, sv} + cookie helpers
+  auth.js            client IP, audited session gates (revocation, forced change, admin)
+  accounts.js        accounts: credentials, setup codes, lockout, roles, bootstrap admin
+  passwords.js       scrypt hashing, password policy, setup-code generation
+  ratelimit.js       per-IP token bucket for POST /login
+  csrf.js            same-origin check on every state-changing request
   permissions.js     permission (action) vs row-scope (member id from the session)
-  members.js         typed-name normalization, validation, atomic lookup-or-create
+  members.js         display-name normalization, validation, lookup-or-create (migration)
   views.js           allow-list of the expense fields a member may see
-  db/migrate.js      idempotent startup migration: members table + expenses.member_id
+  db/migrate.js      idempotent startup migration: members, expenses.member_id, review and account columns
   decision.js        THE DECISION POINT: extract → verdict → insert → audit → commit
   providers.js       explicit provider selection + REQUIRE_REAL_PROVIDERS
   csv.js             CSV export dialect (BOM, minimal quoting, CRLF)
   extraction/        base · amount-text · qr · qr-decode · vision · llm · stub · pipeline
   storage/           base · local · gdrive · google-auth
   slipverify/        base · null           (interface only; out of scope for v1)
-  routes/            auth-routes · expenses · admin · errors · http
+  routes/            auth-routes · expenses · admin · admin-members · errors · http
 shared/numbers.js    Python-compatible float/int parsing and round(); used by server AND browser
-pages/               static HTML shells (login, upload, result, my, expense, admin, audit, error)
+pages/               static HTML shells (login, logout, change-password, upload, result, my, expense,
+                     admin, admin-members, audit, error)
 public/css/app.css   hand-written CSS
 public/js/           copy.js (Thai copy + formatting) · api.js · dom.js · error-view.js · pages/*.js
 test/                node:test suites (ports of every Python test + new QR/Drive/number tests)
 scripts/run_local.sh dev runner behind `npm run dev`
+scripts/admin-reset.js recovery CLI behind `npm run admin:reset -- <username>`
 ```
 
 ---
@@ -349,15 +490,27 @@ scripts/run_local.sh dev runner behind `npm run dev`
 
 | Route | Gate | Returns |
 |---|---|---|
-| `GET /` | — | 303 to `/upload` or `/login` |
-| `GET /login`, `GET /admin/login` | — | page |
-| `POST /login`, `POST /admin/login` | — | 303 (or `{location}` JSON when `Accept: application/json`); 401 `{detail}` on a wrong secret; 400 `member_name_*` on a bad team name |
-| `GET /logout` | — | 303 `/login` |
-| `GET /upload`, `/result`, `/my`, `/expenses/:id` | team, page | page (303 `/login` without a session) |
-| `POST /upload` | team, api | member: `{status:"received", expense}`; admin (with `member_name`): full decision JSON |
-| `GET /api/upload-form`, `/api/my`, `/api/expenses/:id` | team, api | JSON (401 `{location}` without a session) |
-| `GET /admin`, `/admin/audit`, `/admin/export.csv` | admin, page | page / CSV |
-| `GET /api/admin/dashboard`, `/api/admin/audit` | admin, api | JSON |
+| `GET /` | — | 303 to the session's home or `/login` |
+| `GET /login` | — | page |
+| `POST /login` | CSRF | form or JSON `{username, password}` → 303 (or `{location}` JSON with `Accept: application/json`); 401 `bad_credentials`, 423 `account_locked`, 403 `account_disabled`, 429 `rate_limited` (+ `Retry-After`), 403 `csrf_rejected` |
+| `GET /admin/login`, `POST /admin/login` | — | 303 `/login` (retired) |
+| `POST /logout` | CSRF | ends the account's sessions on all devices; 303 `/login` (or `{location}`) |
+| `GET /logout` | — | page with a logout button (no state change) |
+| `GET /account/password` | any session, incl. must-change | page |
+| `GET /api/account` | any session, incl. must-change | `{id, username, name, role, must_change_password, using_setup_code}` |
+| `POST /api/account/password` | any session, incl. must-change | JSON `{current_password, new_password}` (current = setup code when on one) → `{location}`; 400 `current_password_wrong` / `password_*`, 423, 409 `credential_changed` |
+| `GET /upload`, `/result`, `/my`, `/expenses/:id` | member, page | page (303 `/login` without a session, 303 `/account/password` while a change is required) |
+| `POST /upload` | member, api | member: `{status:"received", expense}`; admin (optional `member_id` of an existing member, default self): full decision JSON; 400 `unknown_member`, 422 `invalid_member_id` |
+| `GET /api/upload-form`, `/api/my`, `/api/expenses/:id` | member, api | JSON (401 `{location}` without a session; 403 `password_change_required` + `location`) |
+| `GET /admin`, `/admin/audit`, `/admin/members`, `/admin/export.csv`, `/admin/totals.xlsx` | admin, page | page / CSV / xlsx (a member session gets 303 `/upload`) |
+| `GET /api/admin/members` | admin, api | `{members:[{id, username, name, role, disabled, locked, locked_until, failed_logins, needs_setup, setup_code_active, setup_code_expires_at, must_change_password, password_changed_at, created_at}], self_id}` |
+| `POST /api/admin/members` | admin, api | `{username, name, role?}` → 201 `{member, setup_code, setup_code_expires_at}` (no-store); 409 `username_taken` / `name_taken` |
+| `POST /api/admin/members/:id/setup-code` | admin, api | reset → `{member, setup_code, setup_code_expires_at}` |
+| `POST /api/admin/members/:id/unlock` · `/disable` · `/enable` | admin, api | `{member}`; 409 `last_admin` / `cannot_disable_self` |
+| `POST /api/admin/members/:id/role` · `/name` | admin, api | `{role}` / `{name}` → `{member}`; 409 `last_admin` / `name_taken` |
+| `POST /api/admin/members/:id/username` | admin, api | `{username}` → `{member}`; ends that account's sessions; 400 `username_invalid`, 409 `username_taken`, 404 `member_not_found` |
+| `GET /api/admin/dashboard`, `/api/admin/audit` | admin, api | JSON (a member session gets 403 `admin_required`) |
+| `POST /api/admin/expenses/:id/review` | admin, api | JSON `{decision, approved_amount?, note?}` → updated row; 400 / 409 `not_pending` / 502 `evidence_move_failed` |
 | `GET /healthz` | — | provider status JSON |
 
 ---
@@ -366,11 +519,12 @@ scripts/run_local.sh dev runner behind `npm run dev`
 
 - **Bank slip verification**: `src/slipverify/` ships the interface plus
   `NullSlipVerifier`.
-- **Editing or deleting an expense**: rows are append-only.
-- **Rate limiting on the passcode forms**: failures are audited, but there is
-  no lockout yet. Add one before the link goes anywhere public.
+- **Editing or deleting an expense**: rows are append-only. The admin review
+  only adds review fields and moves the file; the claim and the verdict stay.
 - **Serving evidence images back through the app.**
-- **Per-user accounts**, and therefore any real per-member access boundary.
+- Merging two member rows, and two-factor login.
+- **A shared rate-limit store**: the per-IP limit is in process memory (one
+  machine); the per-account lockout is in the database.
 - **Known amount-parser gaps** (label column above value column, untuned
   constants). They are documented in `src/extraction/amount-text.js` and wait
   for real Vision OCR samples.

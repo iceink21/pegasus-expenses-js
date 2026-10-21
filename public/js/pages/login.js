@@ -1,5 +1,6 @@
-// Team and admin login share this script; the form's action names the endpoint.
-// The team form also carries the typed member name; the admin form has none.
+// One login for members and admins: username + password (or the one-time
+// setup code from the team lead). The server answers with where to go next —
+// the change-password page when the account must set a new password.
 
 import { postForm } from "../api.js";
 import { errorMessage } from "../copy.js";
@@ -18,9 +19,7 @@ form.addEventListener("submit", async (event) => {
   } catch (error) {
     errorBox.textContent = errorMessage(error.status, error.detail);
     errorBox.hidden = false;
-    const nameInput = form.querySelector("#member_name");
-    if (nameInput && String(error.detail).startsWith("member_name")) nameInput.select();
-    else form.querySelector("input[type=password]").select();
+    form.querySelector("#password").select();
   } finally {
     button.disabled = false;
   }

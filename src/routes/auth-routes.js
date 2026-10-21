@@ -1,136 +1,218 @@
-// Team passcode + admin password login.
+// Login, logout and password change for per-member accounts.
 //
-// The team login also takes a typed name. The passcode is checked first, so a
-// wrong passcode reveals nothing about names; only then is the name validated
-// and resolved to a member (created when new) whose id goes into the session.
+// One login for everyone: username + password (or the one-time setup code an
+// admin issued). The role stored on the account decides what the session may
+// do. There is no self-registration and login never creates a member.
+//
+// POST /login, in order — each refusal audited where it is decided:
+//   1. per-IP token bucket            → 429 rate_limited
+//   2. unknown username               → 401 bad_credentials (after a dummy hash)
+//   3. account locked                 → 423 account_locked
+//   4. wrong password / expired code  → 401 bad_credentials (+ lockout count)
+//   5. account disabled               → 403 account_disabled (only after a
+//                                       correct password, so it reveals nothing
+//                                       to a guesser)
+// Steps 2 and 4 send byte-identical bodies and cost one scrypt each.
 
 import express from "express";
 
+import {
+  changePassword,
+  findAccountByUsername,
+  isLocked,
+  isValidUsername,
+  loadAccount,
+  normalizeUsername,
+  recordLoginFailure,
+  recordLoginSuccess,
+  bumpSessionVersion,
+  verifyCredential,
+  Role,
+} from "../accounts.js";
 import { AuditAction, writeAudit } from "../audit.js";
-import { clientIp, verifySecret } from "../auth.js";
+import { CHANGE_PASSWORD_PATH, clientIp, currentAccount, LOGIN_PATH, memberPrincipal, requireMember } from "../auth.js";
 import { HttpError } from "../http-error.js";
-import { parseMemberName, resolveOrCreateMember } from "../members.js";
-import { clearSessionCookie, issueSession, readSession, setSessionCookie } from "../session.js";
+import { clearSessionCookie, hasSessionCookie, issueSession, setSessionCookie } from "../session.js";
 import { sendPage, wantsJson } from "./http.js";
 
-const LOGINS = [
-  {
-    path: "/login",
-    page: "login.html",
-    field: "passcode",
-    secret: (settings) => settings.teamPasscode,
-    success: AuditAction.LOGIN_TEAM_SUCCESS,
-    failure: AuditAction.LOGIN_TEAM_FAILURE,
-    failureDetail: "bad_passcode",
-    session: { team: true, admin: false },
-    withMember: true,
-    next: "/upload",
-  },
-  {
-    path: "/admin/login",
-    page: "admin-login.html",
-    field: "password",
-    secret: (settings) => settings.adminPassword,
-    success: AuditAction.LOGIN_ADMIN_SUCCESS,
-    failure: AuditAction.LOGIN_ADMIN_FAILURE,
-    failureDetail: "bad_admin_password",
-    session: { team: true, admin: true },
-    withMember: false,
-    next: "/admin",
-  },
-];
+const BODY_LIMIT = "8kb";
+const USERNAME_AUDIT_MAX = 32;
+
+function homeFor(account) {
+  if (account.mustChangePassword) return CHANGE_PASSWORD_PATH;
+  return account.role === Role.ADMIN ? "/admin" : "/upload";
+}
+
+function bodyString(body, name) {
+  const value = body?.[name];
+  return typeof value === "string" ? value : "";
+}
+
+/** JSON for the page scripts, a 303 for plain form posts and other clients. */
+function respondWithLocation(req, res, location) {
+  if (wantsJson(req)) {
+    res.json({ location });
+    return;
+  }
+  res.redirect(303, location);
+}
 
 export function createAuthRouter(ctx) {
-  const { db, settings } = ctx;
+  const { db, settings, passwords, loginLimiter } = ctx;
   const router = express.Router();
-  const form = express.urlencoded({ extended: false });
+  const parseBody = [
+    express.urlencoded({ extended: false, limit: BODY_LIMIT }),
+    express.json({ limit: BODY_LIMIT, strict: true }),
+  ];
+
+  const issueCookie = (res, account) =>
+    setSessionCookie(res, settings, issueSession(settings, { uid: account.id, role: account.role, sv: account.sessionVersion }));
 
   router.get("/", (req, res) => {
-    const session = readSession(req, settings);
-    res.redirect(303, session.team || session.admin ? "/upload" : "/login");
+    const account = currentAccount(req, ctx);
+    res.redirect(303, account ? homeFor(account) : LOGIN_PATH);
   });
 
-  for (const login of LOGINS) {
-    router.get(login.path, (req, res) => sendPage(res, login.page));
+  router.get(LOGIN_PATH, (req, res) => sendPage(res, "login.html"));
 
-    router.post(login.path, form, (req, res) => {
-      const candidate = typeof req.body?.[login.field] === "string" ? req.body[login.field] : "";
-      const ok = verifySecret(candidate, login.secret(settings));
-      const ip = clientIp(req, settings);
-      const userAgent = (req.get("user-agent") ?? "").slice(0, 200);
-      // DECISION POINT: every outcome is audited here, before any response.
-      const audit = (outcome, actorName, extra = {}) =>
-        writeAudit(db, {
-          actorKind: "anonymous",
-          actorName,
-          action: outcome === "success" ? login.success : login.failure,
-          subjectType: "session",
-          subjectId: extra.memberId ?? null,
-          outcome,
-          detail: { user_agent: userAgent, ...extra.detail },
-          clientIp: ip,
-        });
+  // The separate admin login is gone: admins are accounts with role admin.
+  router.get("/admin/login", (req, res) => res.redirect(303, LOGIN_PATH));
+  router.post("/admin/login", (req, res) => res.redirect(303, LOGIN_PATH));
 
-      if (!ok) {
-        audit("failure", "-");
-        res.status(401).json({ detail: login.failureDetail });
-        return;
-      }
-
-      let member = null;
-      if (login.withMember) {
-        let name;
-        try {
-          name = parseMemberName(req.body?.member_name ?? "");
-        } catch (error) {
-          if (!(error instanceof HttpError)) throw error;
-          audit("failure", "-", { detail: { reason: error.detail } });
-          throw error;
-        }
-        member = resolveOrCreateMember(db, name, {
-          actorKind: "member",
-          actorName: name,
-          clientIp: ip,
-          source: "login",
-        });
-        audit("success", member.name, {
-          memberId: member.id,
-          detail: { member_id: member.id, member_created: member.created },
-        });
-      } else {
-        audit("success", "-");
-      }
-
-      setSessionCookie(
-        res,
-        settings,
-        issueSession(settings, { ...login.session, memberId: member ? member.id : null }),
-      );
-      // The page script asks for JSON so it can navigate itself; any other
-      // client gets the same 303 the Python app sent.
-      if (wantsJson(req)) {
-        res.json({ location: login.next });
-        return;
-      }
-      res.redirect(303, login.next);
-    });
-  }
-
-  router.get("/logout", (req, res) => {
-    const session = readSession(req, settings);
-    if (Object.keys(session).length > 0) {
+  router.post(LOGIN_PATH, parseBody, async (req, res) => {
+    const ip = clientIp(req, settings);
+    const userAgent = (req.get("user-agent") ?? "").slice(0, 200);
+    const username = normalizeUsername(bodyString(req.body, "username"));
+    const password = bodyString(req.body, "password");
+    // Only something shaped like a username is recorded: people type their
+    // password into the username box, and that must not land in the log.
+    const auditUsername = isValidUsername(username) ? username.slice(0, USERNAME_AUDIT_MAX) : "(invalid)";
+    const fail = (reason, account = null, extra = {}) =>
       writeAudit(db, {
-        actorKind: session.admin ? "admin" : "member",
-        actorName: "-",
+        actorKind: "anonymous",
+        actorName: auditUsername,
+        action: AuditAction.LOGIN_FAILURE,
+        subjectType: "account",
+        subjectId: account ? account.id : null,
+        outcome: "failure",
+        detail: { reason, username: auditUsername, user_agent: userAgent, ...extra },
+        clientIp: ip,
+      });
+    const badCredentials = () => res.status(401).json({ detail: "bad_credentials" });
+
+    const limit = loginLimiter.take(ip);
+    if (!limit.allowed) {
+      fail("rate_limited");
+      res.set("Retry-After", String(limit.retryAfterSeconds)).status(429).json({ detail: "rate_limited" });
+      return;
+    }
+
+    const account = isValidUsername(username) ? findAccountByUsername(db, username) : null;
+    if (!account) {
+      await passwords.burn();
+      fail("bad_credentials", null, { cause: "unknown_user" });
+      badCredentials();
+      return;
+    }
+    if (isLocked(account)) {
+      fail("locked", account, { locked_until: account.lockedUntil });
+      res.status(423).json({ detail: "account_locked" });
+      return;
+    }
+
+    const checked = await verifyCredential(passwords, account, password);
+    if (!checked.ok) {
+      const lockout = recordLoginFailure(db, settings, account.id, { clientIp: ip });
+      fail("bad_credentials", account, { cause: checked.cause, locked_now: lockout.lockedNow });
+      badCredentials();
+      return;
+    }
+    if (account.disabled) {
+      fail("disabled", account);
+      res.status(403).json({ detail: "account_disabled" });
+      return;
+    }
+    // The verify awaited; make sure the credential it checked is still the
+    // account's (not reset or changed meanwhile) and the account still usable.
+    const fresh = loadAccount(db, account.id);
+    const stillCurrent =
+      fresh && !fresh.disabled && !isLocked(fresh) && (fresh.passwordHash ?? fresh.setupCodeHash) === checked.hash;
+    if (!stillCurrent) {
+      fail("bad_credentials", account, { cause: "credential_changed" });
+      badCredentials();
+      return;
+    }
+
+    recordLoginSuccess(db, fresh.id);
+    writeAudit(db, {
+      actorKind: fresh.role,
+      actorName: fresh.name,
+      action: AuditAction.LOGIN_SUCCESS,
+      subjectType: "account",
+      subjectId: fresh.id,
+      outcome: "success",
+      detail: { username: fresh.username, via: checked.kind, must_change_password: fresh.mustChangePassword, user_agent: userAgent },
+      clientIp: ip,
+    });
+    issueCookie(res, fresh);
+    respondWithLocation(req, res, homeFor(fresh));
+  });
+
+  // Logout ends the session on EVERY device (session_version bump).
+  router.post("/logout", (req, res) => {
+    const account = currentAccount(req, ctx);
+    if (account) {
+      bumpSessionVersion(db, account.id);
+      writeAudit(db, {
+        actorKind: account.role,
+        actorName: account.name,
         action: AuditAction.LOGOUT,
-        subjectType: "session",
+        subjectType: "account",
+        subjectId: account.id,
         outcome: "success",
+        detail: { username: account.username, all_devices: true },
         clientIp: clientIp(req, settings),
       });
     }
-    clearSessionCookie(res);
-    res.redirect(303, "/login");
+    if (account || hasSessionCookie(req, settings)) clearSessionCookie(res, settings);
+    respondWithLocation(req, res, LOGIN_PATH);
   });
+
+  // A GET must not change state: this is a page whose button POSTs /logout.
+  router.get("/logout", (req, res) => sendPage(res, "logout.html"));
+
+  router.get(CHANGE_PASSWORD_PATH, requireMember(ctx, "page", { allowMustChange: true }), (req, res) =>
+    sendPage(res, "change-password.html"),
+  );
+
+  router.get("/api/account", requireMember(ctx, "api", { allowMustChange: true }), (req, res) => {
+    const account = req.pegasusAccount;
+    res.set("Cache-Control", "no-store").json({
+      id: account.id,
+      username: account.username,
+      name: account.name,
+      role: account.role,
+      must_change_password: account.mustChangePassword,
+      // While on a setup code, the "current password" box takes the code.
+      using_setup_code: account.passwordHash === null,
+    });
+  });
+
+  router.post(
+    "/api/account/password",
+    requireMember(ctx, "api", { allowMustChange: true }),
+    parseBody,
+    async (req, res) => {
+      const current = bodyString(req.body, "current_password");
+      const next = bodyString(req.body, "new_password");
+      if (current === "") throw new HttpError(400, "current_password_required");
+      const principal = memberPrincipal(req, settings);
+      const updated = await changePassword(db, passwords, settings, req.pegasusAccount, { current, next }, principal);
+      // Every other session of this account just ended; this device continues.
+      issueCookie(res, updated);
+      res.json({ location: homeFor(updated) });
+    },
+  );
 
   return router;
 }

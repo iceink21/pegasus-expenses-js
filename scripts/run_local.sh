@@ -10,8 +10,9 @@ cd "$(dirname "$0")/.."
 
 export DB_PATH="${DB_PATH:-./data/pegasus.db}"
 export LOCAL_UPLOAD_DIR="${LOCAL_UPLOAD_DIR:-./data/uploads}"
-export TEAM_PASSCODE="${TEAM_PASSCODE:-pegasus-dev}"
-export ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin-dev}"
+# Used once, to create the first admin account (username "admin") when the
+# database has none; it must be changed at first login and is ignored after.
+export ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin-dev-password}"
 export SESSION_SECRET="${SESSION_SECRET:-dev-insecure-secret-change-me}"
 # This script deliberately serves with well-known dev secrets, so it must opt in
 # to the startup guard bypass. Nothing outside this script sets this flag, which
@@ -25,7 +26,8 @@ export HOST="${HOST:-127.0.0.1}"
 
 echo "DB_PATH=$DB_PATH"
 echo "ALLOW_INSECURE_DEFAULTS=$ALLOW_INSECURE_DEFAULTS  (local dev only)"
-echo "team passcode: $TEAM_PASSCODE   admin password: $ADMIN_PASSWORD"
+echo "first start on an empty database: log in as admin / $ADMIN_PASSWORD (then set your own password)"
+echo "locked out? npm run admin:reset -- <username>"
 echo "open http://127.0.0.1:$PORT/"
 
 exec node --env-file-if-exists=.env --watch src/server.js

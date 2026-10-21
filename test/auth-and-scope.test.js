@@ -1,33 +1,38 @@
-// Port of tests/test_auth_and_scope.py — auth, audit-on-denial, and the
-// permission / row-scope split.
+// Auth, audit-on-denial, and the permission / row-scope split.
 //
-// SCOPE OF THESE TESTS — read before trusting the names below. The team login
-// takes a typed name and seals the resolved member id into the signed session;
-// the scope check compares that id with the row's member_id, and nothing in a
-// later request can change it. That is a real boundary BETWEEN SESSIONS. It is
-// not an identity boundary: anyone who knows the team passcode can log in
-// under any name (README §3). These tests pin the session boundary and that
-// every denial is audited.
+// Every person logs in with their own username and password; the session
+// names their account (members.id), and the scope check compares that id with
+// the row's member_id. Nothing in a later request can change it. These tests
+// pin that boundary and that every denial is audited. Account lifecycle,
+// lockout, rate limiting, CSRF and revocation live in accounts.test.js.
 
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { test } from "node:test";
 
-import { verifySecret } from "../src/auth.js";
 import { encodeToken } from "../src/session.js";
 import {
-  ADMIN_PASSWORD,
   adminClient,
+  ensureMember,
+  login,
+  MEMBER_PASSWORD,
   MEMBERS,
   query,
   startApp,
   stubSlip,
-  TEAM_PASSCODE,
   teamClient,
   upload,
 } from "./helpers.js";
 
 const AUDIT_BY_ACTION = "SELECT * FROM audit_log WHERE action = ? ORDER BY id";
 const EXPENSES_ORDERED = "SELECT * FROM expenses ORDER BY id";
+
+/** A cookie as the shared-passcode release signed it (salt v1). */
+function v1Token(secret, payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url") + "." + Math.floor(Date.now() / 1000);
+  const key = crypto.createHmac("sha256", secret).update("pegasus-session-v1").digest();
+  return body + "." + crypto.createHmac("sha256", key).update(body).digest("base64url");
+}
 
 test("upload page requires a session", async (t) => {
   const app = await startApp(t);
@@ -36,71 +41,78 @@ test("upload page requires a session", async (t) => {
   assert.equal(response.headers.get("location"), "/login");
 });
 
-test("failed team passcode is audited", async (t) => {
+test("a failed login is audited without the password", async (t) => {
   const app = await startApp(t);
-  const response = await app.client().postForm("/login", { passcode: "nope" });
+  const account = await ensureMember(app, MEMBERS[0]);
+  const response = await login(app.client(), account.username, "wrong-password-123");
   assert.equal(response.status, 401);
-  const rows = query(app.dbPath, AUDIT_BY_ACTION, "auth.team_login.failure");
+  assert.deepEqual(await response.json(), { detail: "bad_credentials" });
+  const rows = query(app.dbPath, AUDIT_BY_ACTION, "auth.login.failure");
   assert.equal(rows.length, 1);
   assert.equal(rows[0].outcome, "failure");
+  assert.equal(rows[0].subject_id, String(account.id));
+  assert.equal(JSON.parse(rows[0].detail).reason, "bad_credentials");
+  assert.ok(!rows[0].detail.includes("wrong-password-123"));
 });
 
-test("failed admin password is audited", async (t) => {
+test("a successful login is audited under the account's display name", async (t) => {
   const app = await startApp(t);
-  const response = await app.client().postForm("/admin/login", { password: "nope" });
-  assert.equal(response.status, 401);
-  assert.equal(query(app.dbPath, AUDIT_BY_ACTION, "auth.admin_login.failure").length, 1);
-});
-
-test("successful logins are audited", async (t) => {
-  const app = await startApp(t);
-  await app.client().postForm("/login", { passcode: TEAM_PASSCODE, member_name: MEMBERS[0] });
-  const [row] = query(app.dbPath, AUDIT_BY_ACTION, "auth.team_login.success");
+  const account = await ensureMember(app, MEMBERS[0]);
+  const response = await login(app.client(), account.username, MEMBER_PASSWORD);
+  assert.equal(response.status, 303);
+  assert.equal(response.headers.get("location"), "/upload");
+  const [row] = query(app.dbPath, AUDIT_BY_ACTION, "auth.login.success");
   assert.equal(row.actor_name, MEMBERS[0]);
-  assert.equal(JSON.parse(row.detail).member_created, true);
+  assert.equal(row.actor_kind, "member");
+  assert.deepEqual(
+    [JSON.parse(row.detail).username, JSON.parse(row.detail).via, JSON.parse(row.detail).must_change_password],
+    [account.username, "password", false],
+  );
 });
 
-test("a right passcode with a bad name is refused and audited", async (t) => {
+test("login never creates a member, whatever username is typed", async (t) => {
   const app = await startApp(t);
-  const response = await app.client().postForm("/login", { passcode: TEAM_PASSCODE, member_name: "   " });
-  assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), { detail: "member_name_required" });
-  const [row] = query(app.dbPath, AUDIT_BY_ACTION, "auth.team_login.failure");
-  assert.equal(JSON.parse(row.detail).reason, "member_name_required");
-  assert.equal(query(app.dbPath, "SELECT * FROM members").length, 0);
+  const before = query(app.dbPath, "SELECT COUNT(*) AS n FROM members")[0].n;
+  for (const username of ["ใครก็ได้", "newperson", ""]) {
+    const response = await login(app.client(), username, "some-password-123");
+    assert.equal(response.status, 401);
+  }
+  assert.equal(query(app.dbPath, "SELECT COUNT(*) AS n FROM members")[0].n, before);
+  assert.equal(query(app.dbPath, "SELECT * FROM audit_log WHERE action LIKE 'member.%'").filter((row) => row.action !== "member.account_created").length, 0);
 });
 
-test("a wrong passcode never creates a member, whatever name is typed", async (t) => {
+test("old and malformed session cookies are sent back to log in", async (t) => {
   const app = await startApp(t);
-  const response = await app.client().postForm("/login", { passcode: "nope", member_name: "ใครก็ได้" });
-  assert.equal(response.status, 401);
-  assert.equal(query(app.dbPath, "SELECT * FROM members").length, 0);
-});
-
-test("a team session without a member id is sent back to log in", async (t) => {
-  // Cookies issued before typed names carried {team:true} only.
-  const app = await startApp(t);
+  const account = await ensureMember(app, MEMBERS[0]);
+  // A genuine shared-passcode-era cookie (v1 salt) for an existing member id.
   const legacy = app.client();
-  legacy.setCookie("pegasus_session", encodeToken("test-secret", { team: true, admin: false }));
+  legacy.setCookie("pegasus_session", v1Token("test-secret", { team: true, admin: true, member_id: account.id }));
   const page = await legacy.get("/upload");
   assert.equal(page.status, 303);
   assert.equal(page.headers.get("location"), "/login");
-  const api = await legacy.get("/api/my");
-  assert.equal(api.status, 401);
+  assert.equal((await legacy.get("/api/my")).status, 401);
 
+  // Correctly signed v2 tokens that do not name a live account.
   const ghost = app.client();
-  ghost.setCookie("pegasus_session", encodeToken("test-secret", { team: true, admin: false, member_id: 999 }));
+  ghost.setCookie("pegasus_session", encodeToken("test-secret", { uid: 999, role: "member", sv: 1 }));
   assert.equal((await ghost.get("/upload")).status, 303);
+  const shapeless = app.client();
+  shapeless.setCookie("pegasus_session", encodeToken("test-secret", { team: true, admin: true }));
+  assert.equal((await shapeless.get("/admin")).status, 303);
 
   const reasons = query(app.dbPath, AUDIT_BY_ACTION, "access.denied").map((row) => JSON.parse(row.detail).reason);
-  assert.deepEqual(reasons, ["no_member_identity", "no_member_identity", "no_member_identity"]);
+  // The first refusal also expires the bad cookie, so the API call after it
+  // arrives with no session at all.
+  assert.equal(legacy.jar.has("pegasus_session"), false);
+  assert.deepEqual(reasons, ["invalid_session", "no_session", "unknown_account", "invalid_session"]);
 });
 
 test("login answers JSON to the page script and a 303 to everything else", async (t) => {
   const app = await startApp(t);
+  await adminClient(app); // sets the bootstrap admin's password
   const viaScript = await app.client().postForm(
-    "/admin/login",
-    { password: ADMIN_PASSWORD },
+    "/login",
+    { username: "admin", password: "admin-test-password-1" },
     { accept: "application/json" },
   );
   assert.equal(viaScript.status, 200);
@@ -108,32 +120,46 @@ test("login answers JSON to the page script and a 303 to everything else", async
   assert.match(viaScript.headers.get("set-cookie"), /pegasus_session=.*HttpOnly.*SameSite=Lax/);
 });
 
-test("admin area requires an admin session", async (t) => {
-  // A plain team session is not enough for the admin view.
+test("the old admin login URL just points at the one login page", async (t) => {
+  const app = await startApp(t);
+  const get = await app.client().get("/admin/login");
+  assert.equal(get.status, 303);
+  assert.equal(get.headers.get("location"), "/login");
+  const post = await app.client().postForm("/admin/login", { password: "test-admin-pass" });
+  assert.equal(post.status, 303);
+  assert.equal(post.headers.get("location"), "/login");
+  assert.equal(post.headers.get("set-cookie"), null, "no session from the retired endpoint");
+});
+
+test("admin area requires an admin account", async (t) => {
+  // A member session is not enough for the admin view.
   const app = await startApp(t);
   const team = await teamClient(app);
   const response = await team.get("/admin");
   assert.equal(response.status, 303);
-  assert.equal(response.headers.get("location"), "/admin/login");
+  assert.equal(response.headers.get("location"), "/upload");
 });
 
 test("session-gate denials are audited where they happen", async (t) => {
-  // The Python dependency redirected without an audit row; the port writes one.
   const app = await startApp(t);
   await app.client().get("/admin");
   const team = await teamClient(app);
   await team.get("/admin/export.csv");
   const api = await app.client().get("/api/admin/dashboard");
   assert.equal(api.status, 401);
-  assert.deepEqual(await api.json(), { detail: "login_required", location: "/admin/login" });
+  assert.deepEqual(await api.json(), { detail: "login_required", location: "/login" });
+  const memberApi = await team.get("/api/admin/dashboard");
+  assert.equal(memberApi.status, 403);
+  assert.deepEqual(await memberApi.json(), { detail: "admin_required" });
 
   const denials = query(app.dbPath, AUDIT_BY_ACTION, "access.denied");
   assert.deepEqual(
     denials.map((row) => [row.actor_kind, row.subject_type, row.subject_id, JSON.parse(row.detail).reason]),
     [
-      ["anonymous", "route", "GET /admin", "no_admin_session"],
-      ["member", "route", "GET /admin/export.csv", "no_admin_session"],
-      ["anonymous", "route", "GET /api/admin/dashboard", "no_admin_session"],
+      ["anonymous", "route", "GET /admin", "no_session"],
+      ["member", "route", "GET /admin/export.csv", "not_admin"],
+      ["anonymous", "route", "GET /api/admin/dashboard", "no_session"],
+      ["member", "route", "GET /api/admin/dashboard", "not_admin"],
     ],
   );
 });
@@ -146,7 +172,7 @@ test("unauthenticated upload is refused and audited before the body is read", as
   assert.equal(query(app.dbPath, EXPENSES_ORDERED).length, 0);
   const [denial] = query(app.dbPath, AUDIT_BY_ACTION, "access.denied");
   assert.equal(denial.subject_id, "POST /upload");
-  assert.equal(JSON.parse(denial.detail).reason, "no_team_session");
+  assert.equal(JSON.parse(denial.detail).reason, "no_session");
 });
 
 test("another member's row is refused by id and the denial audited", async (t) => {
@@ -170,13 +196,15 @@ test("another member's row is refused by id and the denial audited", async (t) =
   assert.ok(denials[0].detail.includes("out_of_scope"));
 });
 
-test("scope follows the member id, not the spelling of the name", async (t) => {
+test("the username is matched case-insensitively and scope follows the account id", async (t) => {
   const app = await startApp(t);
+  const account = await ensureMember(app, "Tiw", { username: "tiw" });
   const first = await teamClient(app, "Tiw");
   await upload(first, { payload: stubSlip("PEGASUS_STUB_AMOUNT=100.00", "own") });
   const expenseId = query(app.dbPath, EXPENSES_ORDERED).at(-1).id;
 
-  const again = await teamClient(app, "  tIW ");
+  const again = app.client();
+  assert.equal((await login(again, "  TIW ", MEMBER_PASSWORD)).status, 303);
   const response = await again.get("/api/expenses/" + expenseId);
   assert.equal(response.status, 200);
   const body = await response.json();
@@ -184,6 +212,7 @@ test("scope follows the member id, not the spelling of the name", async (t) => {
   assert.equal(body.expense.member_name, "Tiw");
   assert.equal(body.detail_level, "member");
   assert.equal(body.view, undefined);
+  assert.equal(query(app.dbPath, EXPENSES_ORDERED).at(-1).member_id, account.id);
 });
 
 test("expense id must be an integer", async (t) => {
@@ -229,17 +258,17 @@ test("tampered session cookie is rejected", async (t) => {
   assert.equal((await client.get("/upload")).status, 303);
 });
 
-test("logout clears the session and is audited", async (t) => {
+test("logout is a POST: it clears the session and is audited; GET /logout changes nothing", async (t) => {
   const app = await startApp(t);
   const team = await teamClient(app);
-  const response = await team.get("/logout");
+  const page = await team.get("/logout");
+  assert.equal(page.status, 200);
+  assert.equal((await team.get("/upload")).status, 200, "GET /logout must not log out");
+  assert.equal(query(app.dbPath, AUDIT_BY_ACTION, "auth.logout").length, 0);
+
+  const response = await team.request("POST", "/logout");
+  assert.equal(response.status, 303);
   assert.equal(response.headers.get("location"), "/login");
   assert.equal((await team.get("/upload")).status, 303);
   assert.equal(query(app.dbPath, AUDIT_BY_ACTION, "auth.logout").length, 1);
-});
-
-test("constant-time secret comparison", () => {
-  assert.equal(verifySecret("abc", "abc"), true);
-  assert.equal(verifySecret("abc", "abd"), false);
-  assert.equal(verifySecret("", "abc"), false);
 });

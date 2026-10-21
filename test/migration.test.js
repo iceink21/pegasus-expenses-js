@@ -12,7 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 
 import { buildApp } from "../src/app.js";
-import { query, startApp, stubSlip, teamClient, testEnv, upload } from "./helpers.js";
+import { adminClient, login, MEMBER_PASSWORD, query, startApp, stubSlip, testEnv, upload } from "./helpers.js";
 
 const LEGACY_DDL = [
   `CREATE TABLE expenses (
@@ -80,11 +80,16 @@ test("legacy expenses are linked to members; a second start changes nothing", ()
   const dbPath = legacyDb();
   boot(dbPath);
 
-  const members = query(dbPath, "SELECT id, name FROM members ORDER BY id").map((row) => [row.id, row.name]);
+  const members = query(dbPath, "SELECT id, name, username, role, password_hash, setup_code_hash FROM members ORDER BY id")
+    .map((row) => [row.id, row.name, row.username, row.role, row.password_hash, row.setup_code_hash]);
   assert.deepEqual(members, [
-    [1, "ติ้ว"],
-    [2, "นาย"],
-  ]);
+    // Migrated members: placeholder login, no credential — no login possible yet.
+    [1, "ติ้ว", "member1", "member", null, null],
+    [2, "นาย", "member2", "member", null, null],
+  ].concat([members[2]]));
+  // …and the bootstrap admin, created once from ADMIN_PASSWORD.
+  assert.deepEqual(members[2].slice(0, 4), [3, "admin", "admin", "admin"]);
+  assert.match(members[2][4], /^scrypt\$/);
   const links = query(dbPath, "SELECT member_name, member_id FROM expenses ORDER BY id").map((row) => [
     row.member_name,
     row.member_id,
@@ -105,6 +110,7 @@ test("legacy expenses are linked to members; a second start changes nothing", ()
   assert.ok(created.every((row) => JSON.parse(row.detail).source === "migration"));
   const indexes = query(dbPath, "SELECT name FROM sqlite_master WHERE type = 'index'").map((row) => row.name);
   assert.ok(indexes.includes("idx_members_name_key") && indexes.includes("idx_expenses_member_id"));
+  assert.ok(indexes.includes("idx_members_username"));
 
   const snapshot = () => JSON.stringify([
     query(dbPath, "SELECT * FROM members ORDER BY id"),
@@ -117,10 +123,27 @@ test("legacy expenses are linked to members; a second start changes nothing", ()
   assert.equal(snapshot(), before, "re-running the migration changed the database");
 });
 
-test("a migrated member logs in by name and sees their old rows; new uploads reuse the id", async (t) => {
+test("a migrated member logs in only after an admin issues a setup code, then sees their old rows", async (t) => {
   const dbPath = legacyDb();
   const app = await startApp(t, { DB_PATH: dbPath });
-  const tiw = await teamClient(app, "  ติ้ว ");
+  // No credential yet: even the "right" guess fails, with the generic answer.
+  const early = await login(app.client(), "member1", "");
+  assert.equal(early.status, 401);
+
+  const admin = await adminClient(app);
+  const issued = await admin.postJson("/api/admin/members/1/setup-code", {});
+  assert.equal(issued.status, 200);
+  const { setup_code: code } = await issued.json();
+
+  const tiw = app.client();
+  const first = await login(tiw, "member1", code);
+  assert.equal(first.status, 303);
+  assert.equal(first.headers.get("location"), "/account/password");
+  // Forced change before anything else.
+  assert.equal((await tiw.get("/api/my")).status, 403);
+  const changed = await tiw.postJson("/api/account/password", { current_password: code, new_password: MEMBER_PASSWORD });
+  assert.equal(changed.status, 200);
+
   const mine = await (await tiw.get("/api/my")).json();
   assert.deepEqual(mine.rows.map((row) => row.id), [3, 2, 1]);
   assert.ok(mine.rows.every((row) => !("verdict" in row)));
@@ -128,11 +151,77 @@ test("a migrated member logs in by name and sees their old rows; new uploads reu
   await upload(tiw, { payload: stubSlip("PEGASUS_STUB_AMOUNT=100.00", "post-migration") });
   const [latest] = query(dbPath, "SELECT member_id FROM expenses ORDER BY id DESC LIMIT 1");
   assert.equal(latest.member_id, 1);
-  assert.equal(query(dbPath, "SELECT * FROM members").length, 2);
+  assert.equal(query(dbPath, "SELECT * FROM members").length, 3, "two migrated members + the admin");
 
   // The other migrated member cannot read ติ้ว's rows.
-  const nai = await teamClient(app, "นาย");
+  const nai = app.client();
+  const naiCode = (await (await admin.postJson("/api/admin/members/2/setup-code", {})).json()).setup_code;
+  await login(nai, "member2", naiCode);
+  await nai.postJson("/api/account/password", { current_password: naiCode, new_password: "nai-new-password-9" });
   assert.equal((await nai.get("/api/expenses/1")).status, 403);
+});
+
+test("fresh and migrated databases get the same members layout", () => {
+  const fresh = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pegasus-fresh-")), "fresh.db");
+  boot(fresh);
+  // Migrated through the ALTER path: members exists without account columns.
+  const migrated = membersOnlyDb();
+  boot(migrated);
+  const columns = (dbPath) => query(dbPath, "SELECT name, type, \"notnull\", dflt_value FROM pragma_table_info('members')");
+  assert.deepEqual(columns(fresh), columns(migrated));
+  assert.deepEqual(columns(fresh).map((column) => column.name).slice(4), [
+    "username",
+    "password_hash",
+    "role",
+    "must_change_password",
+    "session_version",
+    "failed_logins",
+    "locked_until",
+    "lockout_count",
+    "disabled",
+    "password_changed_at",
+    "setup_code_hash",
+    "setup_code_expires_at",
+  ]);
+});
+
+// The members table as it is live today (typed names, no accounts).
+function membersOnlyDb() {
+  const dbPath = legacyDb();
+  const db = new DatabaseSync(dbPath);
+  db.prepare("CREATE TABLE members (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, name_key TEXT NOT NULL, created_at TEXT NOT NULL)").run();
+  db.prepare("CREATE UNIQUE INDEX idx_members_name_key ON members(name_key)").run();
+  db.prepare("INSERT INTO members (name, name_key, created_at) VALUES ('ติ้ว', 'ติ้ว', 't'), ('นาย', 'นาย', 't'), ('คูการ์', 'คูการ์', 't')").run();
+  db.prepare("ALTER TABLE expenses ADD COLUMN member_id INTEGER").run();
+  db.prepare("UPDATE expenses SET member_id = CASE WHEN member_name LIKE 'ติ้ว%' THEN 1 ELSE 2 END").run();
+  db.close();
+  return dbPath;
+}
+
+test("accounts migration from the live members schema keeps ids and links, and is idempotent", () => {
+  const dbPath = membersOnlyDb();
+  const linksBefore = query(dbPath, "SELECT id, member_id FROM expenses ORDER BY id");
+  boot(dbPath);
+  assert.deepEqual(query(dbPath, "SELECT id, member_id FROM expenses ORDER BY id"), linksBefore);
+  assert.deepEqual(
+    query(dbPath, "SELECT id, name, username, role, password_hash, must_change_password, session_version, disabled FROM members WHERE id <= 3 ORDER BY id")
+      .map((row) => Object.values(row)),
+    [
+      [1, "ติ้ว", "member1", "member", null, 0, 1, 0],
+      [2, "นาย", "member2", "member", null, 0, 1, 0],
+      [3, "คูการ์", "member3", "member", null, 0, 1, 0],
+    ],
+  );
+  const snapshot = () => JSON.stringify([
+    query(dbPath, "SELECT * FROM members ORDER BY id"),
+    query(dbPath, "SELECT * FROM expenses ORDER BY id"),
+    query(dbPath, "SELECT COUNT(*) AS n FROM audit_log"),
+  ]);
+  const before = snapshot();
+  boot(dbPath);
+  boot(dbPath);
+  assert.equal(snapshot(), before, "a second start changed the database (or bootstrapped a second admin)");
+  assert.equal(query(dbPath, "SELECT COUNT(*) AS n FROM members WHERE role = 'admin'")[0].n, 1);
 });
 
 test("a fresh database gets the same expenses layout as a migrated one", () => {
@@ -142,5 +231,53 @@ test("a fresh database gets the same expenses layout as a migrated one", () => {
   boot(migrated);
   const columns = (dbPath) => query(dbPath, "SELECT name FROM pragma_table_info('expenses')").map((row) => row.name);
   assert.deepEqual(columns(fresh), columns(migrated));
-  assert.equal(columns(fresh).at(-1), "member_id");
+  assert.deepEqual(columns(fresh).slice(-7), [
+    "member_id",
+    "review_status",
+    "evidence_folder",
+    "approved_amount",
+    "reviewed_by",
+    "reviewed_at",
+    "review_note",
+  ]);
 });
+
+// The schema that is live today: members linked, no review columns yet.
+function memberLinkedDb() {
+  const dbPath = legacyDb();
+  const db = new DatabaseSync(dbPath);
+  db.prepare("ALTER TABLE expenses ADD COLUMN member_id INTEGER").run();
+  db.close();
+  return dbPath;
+}
+
+for (const [label, makeDb] of [
+  ["pre-members schema", legacyDb],
+  ["member-linked schema (current production)", memberLinkedDb],
+]) {
+  test("review backfill from the " + label + " is idempotent and moves no files", () => {
+    const dbPath = makeDb();
+    boot(dbPath);
+    const review = () =>
+      query(dbPath, "SELECT verdict, flagged, review_status, evidence_folder, approved_amount, " +
+        "reviewed_by, reviewed_at, review_note, evidence_ref FROM expenses ORDER BY id");
+    const rows = review();
+    assert.deepEqual(
+      rows.map((row) => [row.verdict, row.review_status, row.evidence_folder]),
+      [
+        ["MATCH", "verified", "legacy"],
+        ["MISMATCH", "pending", "legacy"],
+        ["UNREADABLE", "pending", "legacy"],
+        ["MATCH", "verified", "legacy"],
+      ],
+    );
+    assert.ok(rows.every((row) => row.approved_amount === null && row.reviewed_by === null &&
+      row.reviewed_at === null && row.review_note === null));
+    assert.ok(rows.every((row) => row.evidence_ref === "x"), "legacy evidence refs are untouched");
+
+    const before = JSON.stringify([review(), query(dbPath, "SELECT COUNT(*) AS n FROM audit_log")]);
+    boot(dbPath);
+    boot(dbPath);
+    assert.equal(JSON.stringify([review(), query(dbPath, "SELECT COUNT(*) AS n FROM audit_log")]), before);
+  });
+}

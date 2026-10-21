@@ -13,6 +13,8 @@ COPY src ./src
 COPY shared ./shared
 COPY public ./public
 COPY pages ./pages
+# Recovery CLI: `fly ssh console -C "node scripts/admin-reset.js <username>"`.
+COPY scripts/admin-reset.js ./scripts/admin-reset.js
 
 # Runs as root on purpose: Railway mounts Volumes owned by root, and DB_PATH /
 # LOCAL_UPLOAD_DIR must be writable inside that mount.

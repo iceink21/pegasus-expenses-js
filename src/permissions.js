@@ -15,7 +15,10 @@ export const Action = Object.freeze({
   EXPENSE_READ_OWN: "expense:read_own",
   EXPENSE_READ_ALL: "expense:read_all",
   EXPENSE_EXPORT: "expense:export",
+  EXPENSE_REVIEW: "expense:review",
   AUDIT_READ: "audit:read",
+  // Create accounts, issue setup codes, unlock, disable/enable, change role.
+  MEMBER_MANAGE: "member:manage",
 });
 
 const MEMBER_PERMISSIONS = new Set([Action.EXPENSE_CREATE, Action.EXPENSE_READ_OWN]);
@@ -25,18 +28,20 @@ const ADMIN_PERMISSIONS = new Set([
   Action.EXPENSE_READ_OWN,
   Action.EXPENSE_READ_ALL,
   Action.EXPENSE_EXPORT,
+  Action.EXPENSE_REVIEW,
   Action.AUDIT_READ,
+  Action.MEMBER_MANAGE,
 ]);
 
 const ROLE_PERMISSIONS = { member: MEMBER_PERMISSIONS, admin: ADMIN_PERMISSIONS };
 
 /**
- * Who is acting. `kind` is the role ("member" | "admin"); `name` the display
- * name; `memberId` the members.id bound to a team session at login (null for
- * admin).
+ * Who is acting. `kind` is the account's role ("member" | "admin"); `name` its
+ * display name; `memberId` the members.id the session belongs to — admins are
+ * members too, so it is set for both.
  */
-export function makePrincipal({ kind, name, memberId = null, clientIp = "" }) {
-  return Object.freeze({ kind, name, memberId, clientIp, isAdmin: kind === "admin" });
+export function makePrincipal({ kind, name, memberId = null, username = null, clientIp = "" }) {
+  return Object.freeze({ kind, name, memberId, username, clientIp, isAdmin: kind === "admin" });
 }
 
 export class PermissionDenied extends Error {

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>เข้าสู่ระบบทีม — Pegasus</title>
+  <title>เข้าสู่ระบบ — Pegasus</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anuphan:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
@@ -25,22 +25,21 @@
 
   <main class="wrap main" id="main">
     <div class="narrow">
-      <h1 class="page-title">เข้าสู่ระบบทีม</h1>
-      <p class="page-lede">พิมพ์ชื่อของคุณและรหัสทีม รหัสนี้ใช้ร่วมกันทั้งทีม เพื่อไม่ให้ลิงก์ที่หลุดไปในกลุ่มไลน์กลายเป็นหน้าอัปโหลดสาธารณะ</p>
+      <h1 class="page-title">เข้าสู่ระบบ</h1>
+      <p class="page-lede">ใช้ชื่อผู้ใช้และรหัสผ่านของคุณเอง ถ้าเพิ่งได้รหัสตั้งค่าจากหัวหน้าทีม ให้พิมพ์รหัสนั้นในช่องรหัสผ่าน แล้วระบบจะให้ตั้งรหัสผ่านใหม่</p>
       <p class="notice notice-error" id="form-error" role="alert" hidden></p>
       <form method="post" action="/login" class="card stack" id="login-form">
         <div class="field">
-          <label for="member_name">ชื่อของคุณ</label>
-          <input class="input" id="member_name" name="member_name" type="text" required maxlength="60" autocomplete="nickname">
-          <p class="hint">ใช้ชื่อเดิมทุกครั้ง ตัวพิมพ์เล็ก-ใหญ่และช่องว่างไม่มีผล ถ้าเป็นชื่อใหม่ระบบจะสร้างให้</p>
+          <label for="username">ชื่อผู้ใช้</label>
+          <input class="input" id="username" name="username" type="text" required maxlength="32" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false">
         </div>
         <div class="field">
-          <label for="passcode">รหัสทีม</label>
-          <input class="input" id="passcode" name="passcode" type="password" required autocomplete="current-password">
+          <label for="password">รหัสผ่าน หรือรหัสตั้งค่า</label>
+          <input class="input" id="password" name="password" type="password" required maxlength="512" autocomplete="current-password">
         </div>
         <button type="submit" class="btn btn-primary btn-block">เข้าสู่ระบบ</button>
       </form>
-      <p class="mt small center"><a class="muted" href="/admin/login">เข้าสู่ระบบหัวหน้าทีม</a></p>
+      <p class="mt small center muted">ลืมรหัสผ่านหรือเข้าไม่ได้ ติดต่อหัวหน้าทีมเพื่อขอรหัสตั้งค่าใหม่</p>
     </div>
   </main>
 

@@ -46,6 +46,29 @@ export const SUBMITTED_UI = Object.freeze({
   icon: "✓",
 });
 
+// Evidence review (admin-only, like VERDICT_UI). `tone` maps to .badge-<tone>.
+export const REVIEW_UI = Object.freeze({
+  verified: { label: "ผ่านอัตโนมัติ", tone: "ok" },
+  pending: { label: "รอตรวจ", tone: "warn" },
+  approved: { label: "อนุมัติแล้ว", tone: "ok" },
+  rejected: { label: "ไม่อนุมัติ", tone: "error" },
+});
+
+const FOLDER_LABEL = Object.freeze({
+  verified: "Verified",
+  "needs-review": "Needs-Review",
+  rejected: "Rejected",
+  legacy: "เดิม (ก่อนแยกโฟลเดอร์)",
+});
+
+export function reviewUi(status) {
+  return REVIEW_UI[status] ?? { label: status ?? "—", tone: "info" };
+}
+
+export function folderLabel(folder) {
+  return FOLDER_LABEL[folder] ?? folder ?? "—";
+}
+
 const SOURCE_LABEL = Object.freeze({
   qr: "QR (EMVCo tag 54)",
   ocr: "OCR",
@@ -62,9 +85,13 @@ const ERROR_MESSAGES_TH = Object.freeze({
   400: "ข้อมูลที่ส่งมาไม่ถูกต้อง",
   401: "กรุณาเข้าสู่ระบบอีกครั้ง",
   403: "ไม่มีสิทธิ์เข้าถึงรายการนี้",
+  409: "รายการนี้ถูกแก้ไปแล้ว",
+  423: "บัญชีถูกล็อกชั่วคราว",
+  429: "ลองหลายครั้งเกินไป รอสักครู่แล้วลองใหม่",
   404: "ไม่พบหน้าที่ต้องการ",
   413: "ไฟล์ใหญ่เกินไป กรุณาย่อรูปก่อนอัปโหลด",
   422: "กรอกข้อมูลไม่ครบ",
+  502: "ระบบเก็บไฟล์ขัดข้อง ลองใหม่อีกครั้ง",
 });
 
 const DETAIL_MESSAGES_TH = Object.freeze({
@@ -81,8 +108,39 @@ const DETAIL_MESSAGES_TH = Object.freeze({
   not_found: "ไม่พบรายการนี้",
   scope: "รายการนี้เป็นของสมาชิกคนอื่น",
   permission: "บัญชีนี้ไม่มีสิทธิ์ทำรายการนี้",
-  bad_passcode: "รหัสทีมไม่ถูกต้อง ลองใหม่อีกครั้ง",
-  bad_admin_password: "รหัสผู้ดูแลไม่ถูกต้อง",
+  bad_credentials: "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง",
+  account_locked: "บัญชีถูกล็อกชั่วคราวเพราะใส่รหัสผิดหลายครั้ง รอสักครู่หรือติดต่อหัวหน้าทีม",
+  account_disabled: "บัญชีนี้ถูกปิดใช้งาน ติดต่อหัวหน้าทีม",
+  rate_limited: "ลองเข้าสู่ระบบหลายครั้งเกินไป รอสักครู่แล้วลองใหม่",
+  csrf_rejected: "คำขอไม่ได้มาจากหน้าของระบบ กรุณาเปิดหน้าใหม่แล้วลองอีกครั้ง",
+  admin_required: "หน้านี้สำหรับผู้ดูแลเท่านั้น",
+  password_change_required: "กรุณาตั้งรหัสผ่านใหม่ก่อน",
+  password_required: "กรุณากรอกรหัสผ่านใหม่",
+  password_too_short: "รหัสผ่านสั้นเกินไป (อย่างน้อย 10 ตัวอักษร)",
+  password_too_long: "รหัสผ่านยาวเกินไป (ไม่เกิน 128 ตัวอักษร)",
+  password_same_as_username: "รหัสผ่านต้องไม่เหมือนชื่อผู้ใช้",
+  password_too_common: "รหัสผ่านนี้คนใช้กันบ่อยเกินไป เลือกอันอื่น",
+  password_unchanged: "รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสเดิม",
+  password_confirm_mismatch: "รหัสผ่านใหม่สองช่องไม่ตรงกัน",
+  current_password_required: "กรุณากรอกรหัสผ่านปัจจุบัน",
+  current_password_wrong: "รหัสผ่านปัจจุบัน (หรือรหัสตั้งค่า) ไม่ถูกต้อง",
+  credential_changed: "รหัสผ่านของบัญชีนี้เพิ่งถูกเปลี่ยน กรุณาเข้าสู่ระบบใหม่",
+  username_invalid: "ชื่อผู้ใช้ใช้ได้เฉพาะ a–z, 0–9, จุด, ขีด, ขีดล่าง 3–32 ตัว",
+  username_taken: "ชื่อผู้ใช้นี้มีคนใช้แล้ว",
+  name_taken: "มีสมาชิกชื่อนี้แล้ว",
+  invalid_role: "ไม่รู้จักบทบาทนี้",
+  last_admin: "ต้องมีผู้ดูแลที่ใช้งานได้อย่างน้อยหนึ่งคน",
+  cannot_disable_self: "ปิดใช้งานบัญชีของตัวเองไม่ได้",
+  member_not_found: "ไม่พบสมาชิกนี้",
+  unknown_member: "ไม่พบสมาชิกที่เลือก",
+  invalid_member_id: "เลือกสมาชิกไม่ถูกต้อง",
+  not_pending: "รายการนี้ตรวจไปแล้ว รีเฟรชหน้าเพื่อดูผลล่าสุด",
+  review_in_progress: "มีคนกำลังตรวจรายการนี้อยู่ ลองใหม่อีกครั้ง",
+  invalid_decision: "ไม่รู้จักผลการตรวจนี้",
+  invalid_note: "หมายเหตุไม่ถูกต้อง",
+  note_too_long: "หมายเหตุยาวเกินไป (ไม่เกิน 500 ตัวอักษร)",
+  invalid_body: "ข้อมูลที่ส่งมาไม่ถูกต้อง",
+  evidence_move_failed: "ย้ายไฟล์หลักฐานไม่สำเร็จ สถานะยังไม่เปลี่ยน ลองใหม่อีกครั้ง",
 });
 
 /** Thai message for an API failure: the specific detail first, then the status. */

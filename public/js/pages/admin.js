@@ -1,41 +1,62 @@
 // Port of templates/admin.html — totals, every expense, and provider status.
+// Totals come from the one server-side aggregate (src/totals.js) that also
+// feeds the Excel export, so the page and the file always agree.
 
 import { getJson } from "../api.js";
-import { flagLabels, formatDt, formatThb, VERDICT_UI } from "../copy.js";
+import { flagLabels, folderLabel, formatDt, formatThb, reviewUi, VERDICT_UI } from "../copy.js";
 import { h, keyValueList } from "../dom.js";
 import { loadInto } from "../error-view.js";
 
 const container = document.getElementById("dashboard");
 
-const COLUMNS = ["#", "วันที่", "ผู้จ่าย", "หมวด", "กรอก", "อ่านได้", "ผล", "ธง"];
-const NUMERIC_COLUMNS = new Set(["กรอก", "อ่านได้"]);
+const COLUMNS = ["#", "วันที่", "ผู้จ่าย", "หมวด", "กรอก", "อ่านได้", "อนุมัติ", "ผล", "ธง", "สถานะตรวจ", "โฟลเดอร์"];
+const NUMERIC_COLUMNS = new Set(["กรอก", "อ่านได้", "อนุมัติ"]);
+
+function reviewBadge(status) {
+  const ui = reviewUi(status);
+  return h("span", { class: "badge badge-" + ui.tone }, ui.label);
+}
 
 function expenseRow(row) {
   return h(
     "tr",
     {},
-    h("td", { class: "mono muted" }, row.id),
+    h("td", { class: "mono muted" }, h("a", { class: "muted", href: "/expenses/" + encodeURIComponent(row.id) }, row.id)),
     h("td", { class: "nowrap" }, formatDt(row.created_at)),
     h("td", { class: "nowrap" }, row.member_name),
     h("td", { class: "nowrap" }, row.category),
     h("td", { class: "mono num" }, formatThb(row.claimed_amount)),
     h("td", { class: "mono num" }, formatThb(row.extracted_amount)),
-    h("td", { class: "nowrap" }, VERDICT_UI[row.verdict].label),
+    h("td", { class: "mono num" }, formatThb(row.approved_amount)),
+    h("td", { class: "nowrap" }, VERDICT_UI[row.verdict]?.label ?? row.verdict),
     h("td", { class: "flag" }, flagLabels(row.flag_reason).join(", ")),
+    h("td", { class: "nowrap" }, reviewBadge(row.review_status)),
+    h("td", { class: "nowrap xsmall muted" }, folderLabel(row.evidence_folder)),
   );
 }
 
 loadInto(container, async () => {
   const data = await getJson("/api/admin/dashboard");
-  const stat = (label, value, extraClass = "") =>
-    h("div", { class: "card" }, h("p", { class: "stat-label" }, label), h("p", { class: "stat-value " + extraClass }, value));
+  const grand = data.grand;
+  const stat = (label, value, extraClass = "", sub = null) =>
+    h(
+      "div",
+      { class: "card" },
+      h("p", { class: "stat-label" }, label),
+      h("p", { class: "stat-value " + extraClass }, value),
+      sub && h("p", { class: "stat-sub" }, sub),
+    );
 
   container.replaceChildren(
     h(
       "div",
       { class: "stat-grid" },
-      stat("ยอดรวมทั้งทีม", formatThb(data.grand_total) + " ฿"),
+      stat("ยอดรวมทั้งทีม", formatThb(grand.claimed_total) + " ฿", "", "ไม่รวมรายการที่ไม่อนุมัติ"),
+      stat("ยืนยันแล้ว", formatThb(grand.verified_total) + " ฿", "", "ผ่านอัตโนมัติ + ยอดที่อนุมัติ"),
+      stat("รอตรวจ", formatThb(grand.pending_total) + " ฿", "flag", grand.pending_count + " รายการ"),
+      stat("ไม่อนุมัติ", formatThb(grand.rejected_total) + " ฿", "", grand.rejected_count + " รายการ"),
       stat("รายการติดธง", String(data.flagged_count), "flag"),
+      stat("จำนวนรายการ", String(grand.n)),
     ),
     h(
       "div",
@@ -43,8 +64,20 @@ loadInto(container, async () => {
       h("h2", { class: "section-title" }, "สมาชิกและยอดรายคน"),
       keyValueList(
         data.totals.map((total) => [
-          h("span", {}, total.member_name + " ", h("span", { class: "xsmall muted" }, "(" + total.n + " รายการ)")),
-          formatThb(total.total) + " ฿",
+          h(
+            "span",
+            {},
+            total.member_name + " ",
+            h("span", { class: "xsmall muted" }, "(" + total.n + " รายการ)"),
+            h(
+              "span",
+              { class: "member-split" },
+              "ยืนยัน " + formatThb(total.verified_total) +
+                " · รอตรวจ " + formatThb(total.pending_total) +
+                " · ไม่อนุมัติ " + formatThb(total.rejected_total),
+            ),
+          ),
+          formatThb(total.claimed_total) + " ฿",
           "mono",
         ]),
       ),

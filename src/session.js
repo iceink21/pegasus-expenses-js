@@ -5,11 +5,26 @@
 // The HMAC key is derived from SESSION_SECRET and a fixed salt, so the secret
 // itself never signs anything directly. Verification is constant-time and
 // rejects expired and future-dated tokens.
+//
+// v2 (per-member accounts): the payload is { uid, role, sv } — the members.id,
+// the role at issue time and the account's session_version. A new salt means
+// every v1 cookie (shared-passcode era) fails verification. The token is only
+// half the check: the session gate (src/auth.js) reloads the account on every
+// request and rejects the token when sv or role no longer match, which is how
+// logout, password changes, disabling and role changes revoke sessions.
 
 import crypto from "node:crypto";
 
-export const SESSION_COOKIE = "pegasus_session";
-const SALT = "pegasus-session-v1";
+// __Host- makes the browser refuse the cookie unless it is Secure, Path=/ and
+// has no Domain, so a sibling subdomain cannot plant or overwrite it. Plain
+// http (local dev, the test suite) cannot use the prefix.
+export const SESSION_COOKIE_SECURE = "__Host-pegasus_session";
+export const SESSION_COOKIE_PLAIN = "pegasus_session";
+const SALT = "pegasus-session-v2";
+
+export function sessionCookieName(settings) {
+  return settings.cookieSecure ? SESSION_COOKIE_SECURE : SESSION_COOKIE_PLAIN;
+}
 
 function signingKey(secret) {
   return crypto.createHmac("sha256", secret).update(SALT).digest();
@@ -65,33 +80,42 @@ export function readCookie(req, name) {
   return null;
 }
 
-/**
- * A team session carries the member id resolved at login; scope checks use it.
- * Admin sessions carry none.
- */
-export function issueSession(settings, { team, admin, memberId = null }) {
-  const payload = { team: Boolean(team), admin: Boolean(admin) };
-  if (memberId !== null) payload.member_id = memberId;
-  return encodeToken(settings.sessionSecret, payload);
+/** Token for account `uid` with role `role` at session_version `sv`. */
+export function issueSession(settings, { uid, role, sv }) {
+  return encodeToken(settings.sessionSecret, { uid, role, sv });
 }
 
-/** The session payload for this request, or {} when absent/invalid. */
+/** True when the request carries a session cookie at all (valid or not). */
+export function hasSessionCookie(req, settings) {
+  return readCookie(req, sessionCookieName(settings)) !== null;
+}
+
+/**
+ * The verified { uid, role, sv } for this request, or null when absent,
+ * forged, expired, or not a v2 payload. Says nothing about whether the
+ * account still accepts it — that is the session gate's job.
+ */
 export function readSession(req, settings) {
-  const raw = readCookie(req, SESSION_COOKIE);
-  if (!raw) return {};
-  return decodeToken(settings.sessionSecret, raw, settings.sessionMaxAgeSeconds) ?? {};
+  const raw = readCookie(req, sessionCookieName(settings));
+  if (!raw) return null;
+  const payload = decodeToken(settings.sessionSecret, raw, settings.sessionMaxAgeSeconds);
+  if (!payload) return null;
+  const { uid, role, sv } = payload;
+  if (!Number.isSafeInteger(uid) || !Number.isSafeInteger(sv) || typeof role !== "string") return null;
+  return { uid, role, sv };
+}
+
+function cookieOptions(settings) {
+  return { httpOnly: true, sameSite: "lax", secure: settings.cookieSecure, path: "/" };
 }
 
 export function setSessionCookie(res, settings, token) {
-  res.cookie(SESSION_COOKIE, token, {
+  res.cookie(sessionCookieName(settings), token, {
+    ...cookieOptions(settings),
     maxAge: settings.sessionMaxAgeSeconds * 1000,
-    httpOnly: true,
-    sameSite: "lax",
-    secure: settings.cookieSecure,
-    path: "/",
   });
 }
 
-export function clearSessionCookie(res) {
-  res.clearCookie(SESSION_COOKIE, { path: "/" });
+export function clearSessionCookie(res, settings) {
+  res.clearCookie(sessionCookieName(settings), cookieOptions(settings));
 }

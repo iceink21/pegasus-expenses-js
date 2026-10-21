@@ -1,4 +1,5 @@
-// Typed member names → one members row per person.
+// Member display names → one members row per person. (Login accounts on the
+// same rows live in accounts.js.)
 //
 // A name is normalized (Unicode NFC, zero-width characters removed, internal
 // whitespace collapsed, trimmed) and then matched case-insensitively through
@@ -12,7 +13,6 @@ import { AuditAction, utcNowIso, writeAudit } from "./audit.js";
 import { inTransaction, statement } from "./db/connection.js";
 import {
   INSERT_MEMBER_IF_NEW,
-  SELECT_MEMBER_BY_ID,
   SELECT_MEMBER_BY_KEY,
   SELECT_MEMBER_NAMES,
 } from "./db/sql.js";
@@ -91,11 +91,6 @@ export function resolveOrCreateMember(db, name, audit) {
 /** Existing member for a typed name, or null. Never creates. */
 export function findMemberByName(db, typed) {
   const row = statement(db, SELECT_MEMBER_BY_KEY).get(memberNameKey(normalizeMemberName(typed)));
-  return row ? Object.freeze({ id: Number(row.id), name: String(row.name) }) : null;
-}
-
-export function loadMember(db, memberId) {
-  const row = statement(db, SELECT_MEMBER_BY_ID).get(memberId);
   return row ? Object.freeze({ id: Number(row.id), name: String(row.name) }) : null;
 }
 

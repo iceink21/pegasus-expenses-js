@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>สมาชิก — Pegasus</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anuphan:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/css/app.css">
+  <script type="module" src="/js/pages/admin-members.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-row">
+      <a href="/upload" class="brand">
+        <span class="brand-name">PEGASUS</span>
+      </a>
+      <nav class="site-nav" aria-label="เมนูหลัก">
+        <a href="/upload">ส่งสลิป</a>
+        <a href="/my">รายการของฉัน</a>
+        <a href="/admin">หัวหน้าทีม</a>
+        <a href="/admin/members" aria-current="page">สมาชิก</a>
+        <form method="post" action="/logout" class="nav-logout"><button type="submit">ออกจากระบบ</button></form>
+      </nav>
+    </div>
+  </header>
+
+  <div class="stub-banner" id="stub-banner" hidden>
+    <div class="wrap">โหมดทดสอบ: ยังไม่ได้ตั้งค่า Google Vision ระบบใช้ตัวอ่านจำลอง ยอดที่อ่านได้ไม่ใช่ยอดจริงจากสลิป</div>
+  </div>
+
+  <main class="wrap main" id="main">
+    <div class="title-row">
+      <h1 class="page-title">สมาชิกและบัญชี</h1>
+    </div>
+    <p class="page-lede">ทุกคนเข้าสู่ระบบด้วยบัญชีของตัวเอง สร้างบัญชีแล้วส่งรหัสตั้งค่าให้เจ้าของบัญชีทางช่องทางส่วนตัว รหัสใช้ได้ครั้งเดียวภายใน 72 ชั่วโมง</p>
+    <p class="notice notice-error" id="form-error" role="alert" hidden></p>
+
+    <div class="card setup-code-card" id="setup-code" hidden aria-live="polite">
+      <h2 class="section-title">รหัสตั้งค่าสำหรับ <span id="setup-code-who"></span></h2>
+      <p class="setup-code mono" id="setup-code-value"></p>
+      <p class="small">ใช้ได้ครั้งเดียว หมดอายุ <span id="setup-code-expiry" class="mono"></span> (UTC)</p>
+      <p class="small notice notice-flag">ระบบแสดงรหัสนี้ครั้งเดียวเท่านั้น และไม่ได้เก็บไว้ในรูปที่อ่านได้ คัดลอกแล้วส่งให้เจ้าของบัญชีโดยตรง</p>
+      <div class="actions mt">
+        <button type="button" class="btn btn-secondary btn-small" id="setup-code-copy">คัดลอก</button>
+        <button type="button" class="btn btn-secondary btn-small" id="setup-code-hide">ซ่อน</button>
+      </div>
+    </div>
+
+    <form class="card stack" id="create-form">
+      <h2 class="section-title">เพิ่มสมาชิก</h2>
+      <div class="field">
+        <label for="name">ชื่อที่แสดง</label>
+        <input class="input" id="name" name="name" type="text" required maxlength="60" autocomplete="off">
+        <p class="hint">ชื่อที่จะเห็นในรายการและไฟล์ Excel เช่น ติ้ว</p>
+      </div>
+      <div class="field">
+        <label for="new-username">ชื่อผู้ใช้ (สำหรับเข้าสู่ระบบ)</label>
+        <input class="input mono" id="new-username" name="username" type="text" required minlength="3" maxlength="32" pattern="[A-Za-z0-9._\-]{3,32}" autocomplete="off" autocapitalize="none" spellcheck="false">
+        <p class="hint">a–z, 0–9, จุด, ขีด, ขีดล่าง 3–32 ตัว (ระบบเก็บเป็นตัวพิมพ์เล็ก)</p>
+      </div>
+      <div class="field">
+        <label for="role">บทบาท</label>
+        <select class="input" id="role" name="role">
+          <option value="member" selected>สมาชิก</option>
+          <option value="admin">ผู้ดูแล (หัวหน้าทีม)</option>
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary" id="create-button">สร้างบัญชีและออกรหัสตั้งค่า</button>
+    </form>
+
+    <h2 class="section-title mt">บัญชีทั้งหมด</h2>
+    <div id="members">
+      <p class="loading">กำลังโหลด…</p>
+    </div>
+  </main>
+
+  <noscript>
+    <p class="wrap notice notice-error">หน้านี้ต้องเปิด JavaScript</p>
+  </noscript>
+</body>
+</html>

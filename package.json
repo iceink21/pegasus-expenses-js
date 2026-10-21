@@ -10,9 +10,11 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "sh scripts/run_local.sh",
-    "test": "LOG_LEVEL=silent node --test \"test/**/*.test.js\""
+    "test": "LOG_LEVEL=silent node --test \"test/**/*.test.js\"",
+    "admin:reset": "node --env-file-if-exists=.env scripts/admin-reset.js"
   },
   "dependencies": {
+    "exceljs": "4.4.0",
     "express": "5.2.1",
     "jsqr": "1.4.0",
     "multer": "2.4.0",
