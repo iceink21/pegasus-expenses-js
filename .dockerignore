@@ -2,6 +2,8 @@ node_modules
 data
 test
 scripts
+# The image ships the admin recovery script (`fly ssh console -C "node scripts/admin-reset.js <user>"`).
+!scripts/admin-reset.js
 docs
 .git
 .env
