@@ -1,0 +1,50 @@
+# Fly.io deploy. Builds with the same Dockerfile as Railway.
+# Secrets (SESSION_SECRET, ADMIN_PASSWORD, OPENROUTER_API_KEY) are set with
+# `fly secrets`, never here.
+#   SESSION_SECRET  required; changing it logs everyone out.
+#   ADMIN_PASSWORD  bootstrap-only: read once to create the first admin account
+#                   when the database has none (forced change at first login);
+#                   ignored afterwards and may then be unset.
+#   TEAM_PASSCODE   retired (per-member accounts): `fly secrets unset TEAM_PASSCODE`.
+# Recovery when no admin can log in:
+#   fly ssh console -C "node scripts/admin-reset.js <username>"
+app = "pegasus-uav-expenses-th"
+primary_region = "sin"
+
+[env]
+  PORT = "8811"
+  # Both paths must sit inside the mounted Volume or a redeploy wipes them.
+  DB_PATH = "/data/pegasus.db"
+  LOCAL_UPLOAD_DIR = "/data/uploads"
+  # Only Fly's proxy can reach the port, so its X-Forwarded-For (audit IP,
+  # login rate limit) and X-Forwarded-Proto (CSRF origin check) are trusted.
+  TRUSTED_PROXY_IPS = "*"
+  # Fly's edge sets Fly-Client-IP to the real client address itself; use it for
+  # the audit IP and the per-IP login rate limit instead of X-Forwarded-For,
+  # whose left part is client-supplied.
+  CLIENT_IP_HEADER = "fly-client-ip"
+  # 0 until the Google Drive service account exists: evidence is stored on the
+  # Volume for now, and 1 would refuse to start without GDRIVE_* set.
+  REQUIRE_REAL_PROVIDERS = "0"
+
+[mounts]
+  source = "data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8811
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "15s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
