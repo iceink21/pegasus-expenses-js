@@ -247,12 +247,24 @@ SET review_status = ?, approved_amount = ?, reviewed_by = ?, reviewed_at = ?, re
     evidence_backend = ?, evidence_ref = ?, evidence_url = ?, evidence_folder = ?
 WHERE id = ? AND review_status = 'pending'`;
 
+/** Display name for a member's evidence folder (read server-side, never from a request). */
+export const SELECT_MEMBER_NAME = "SELECT id, name FROM members WHERE id = ?";
+
 export const SELECT_EXPENSE_BY_ID = "SELECT * FROM expenses WHERE id = ?";
 export const SELECT_EXPENSES_ALL = "SELECT * FROM expenses ORDER BY id DESC LIMIT ?";
 export const SELECT_EXPENSES_BY_MEMBER_ID =
   "SELECT * FROM expenses WHERE member_id = ? ORDER BY id DESC LIMIT ?";
 export const SELECT_EXPENSES_FLAGGED =
   "SELECT * FROM expenses WHERE flagged = 1 ORDER BY id DESC LIMIT ?";
+// Admin claims list. Both filters optional (NULL = no filter): evidence_folder
+// exactly, member_name as a substring (the caller escapes % _ \\ with \\).
+export const SELECT_EXPENSES_FILTERED = `
+SELECT id, created_at, member_name, category, claimed_amount, extracted_amount,
+       approved_amount, verdict, flag_reason, review_status, evidence_folder
+FROM expenses
+WHERE (? IS NULL OR evidence_folder = ?)
+  AND (? IS NULL OR member_name LIKE ? ESCAPE '\\')
+ORDER BY id DESC LIMIT ?`;
 export const SELECT_EXPENSES_EXPORT = "SELECT * FROM expenses ORDER BY id ASC";
 export const SELECT_FIRST_BY_SHA =
   "SELECT * FROM expenses WHERE image_sha256 = ? ORDER BY id ASC LIMIT 1";

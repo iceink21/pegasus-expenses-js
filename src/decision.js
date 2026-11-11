@@ -30,6 +30,7 @@ import {
   INSERT_EXPENSE,
   SELECT_EXPENSE_BY_ID,
   SELECT_FIRST_BY_SHA,
+  SELECT_MEMBER_NAME,
   SELECT_OTHER_ROWS_SHARING_EVIDENCE,
   UPDATE_EXPENSE_REVIEW,
 } from "./db/sql.js";
@@ -97,6 +98,16 @@ export function initialReviewStatus(folder) {
 }
 
 /** Extract, decide, route + store evidence, persist, audit — one transaction. */
+/**
+ * The member descriptor handed to storage, read from the members table (the
+ * authority for the display name), or null for a row with no member (legacy).
+ */
+function storageMember(db, memberId) {
+  if (memberId === null || memberId === undefined) return null;
+  const found = statement(db, SELECT_MEMBER_NAME).get(Number(memberId));
+  return { memberId: Number(memberId), memberName: found ? String(found.name) : "" };
+}
+
 export async function recordSubmission(
   db,
   {
@@ -148,6 +159,7 @@ export async function recordSubmission(
     contentType,
     folder: evidenceFolder,
     ownerTag: "M" + memberId,
+    member: storageMember(db, memberId),
   });
 
   const expenseId = inTransaction(db, () => {
@@ -281,6 +293,10 @@ function auditQuietly(db, entry) {
  * synchronous transaction that re-checks the row is still pending, writes the
  * review and its audit row.
  *
+ * Layout: a member-layout file (<member>/<verdict>/<file>) is moved within its
+ * own member folder; a flat/root file moves between the flat folders as it
+ * always did. The storage backend works that out from the ref.
+ *
  * The file is MOVED, unless other rows point at the same stored file (legacy
  * duplicates reused their original's ref): then the reviewed row gets its own
  * COPY in the target folder and the shared file is not touched, so rejecting a
@@ -331,7 +347,10 @@ export async function reviewExpense(db, { principal, providers, row, decision, a
         throw new Error("evidence is in " + row.evidence_backend + " but the active storage is " + storage.name);
       }
       evidence = copied
-        ? await storage.copy(row.evidence_ref, toFolder, { ownerTag: "M" + row.member_id })
+        ? await storage.copy(row.evidence_ref, toFolder, {
+            ownerTag: "M" + row.member_id,
+            member: storageMember(db, row.member_id),
+          })
         : await storage.move(row.evidence_ref, toFolder);
     } catch (error) {
       // AUDIT at the point of failure; the row stays pending.

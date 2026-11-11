@@ -15,10 +15,24 @@
 // use (folders this app created stay visible under the drive.file scope) and
 // their ids cached; GDRIVE_FOLDER_VERIFIED / _REVIEW / _REJECTED override them
 // with existing folder ids.
+//
+// New uploads are filed per member instead: <root>/<name>_M<id>/<Verdict>/<file>
+// (member folders and their verdict subfolders are found or created lazily,
+// ids cached, in-flight creations shared so concurrent uploads cannot create
+// duplicates). Files already in the flat folders or the root stay there and keep
+// working; move() detects the layout from the file's parents. The flat-folder
+// overrides above apply to the flat layout only.
 
 import crypto from "node:crypto";
 
-import { assertEvidenceFolder, EvidenceFolder, safeFilename, storedEvidence } from "./base.js";
+import {
+  assertEvidenceFolder,
+  EvidenceFolder,
+  isMemberFolderName,
+  memberFolderName,
+  safeFilename,
+  storedEvidence,
+} from "./base.js";
 import { ServiceAccountTokenSource } from "./google-auth.js";
 
 export const DRIVE_SCOPES = Object.freeze(["https://www.googleapis.com/auth/drive.file"]);
@@ -102,6 +116,8 @@ export class GoogleDriveStorage {
     this.folderId = assertDriveId(folderId, "root folder");
     this.fetchImpl = fetchImpl;
     this.folderIds = new Map();
+    // Member layout: "m:<memberFolder>" and "<parentId>/<folder>" -> Promise<id>.
+    this.subfolders = new Map();
     for (const [folder, id] of Object.entries(folderOverrides)) {
       if (id) this.folderIds.set(assertEvidenceFolder(folder), Promise.resolve(assertDriveId(id, folder + " folder")));
     }
@@ -131,10 +147,72 @@ export class GoogleDriveStorage {
     return pending;
   }
 
-  async findOrCreateFolder(name) {
+  /** Cached, in-flight-deduped folder lookup for the member layout. */
+  cachedFolder(key, name, parentId) {
+    let pending = this.subfolders.get(key);
+    if (!pending) {
+      pending = this.findOrCreateFolder(name, parentId);
+      this.subfolders.set(key, pending);
+      pending.catch(() => {
+        if (this.subfolders.get(key) === pending) this.subfolders.delete(key);
+      });
+    }
+    return pending;
+  }
+
+  /** <root>/<name>_M<id> for a member. */
+  memberFolderId(member) {
+    const name = memberFolderName(member);
+    return this.cachedFolder("m:" + name, name, this.folderId);
+  }
+
+  /** The Verified/Needs-Review/Rejected subfolder of any (member) folder. */
+  verdictFolderIn(parentId, folder) {
+    assertEvidenceFolder(folder);
+    return this.cachedFolder(parentId + "/" + folder, DRIVE_FOLDER_NAMES[folder], parentId);
+  }
+
+  /** Target folder id for store/copy: the member's verdict folder, else the flat one. */
+  async placementFor(folder, member) {
+    if (!member) return this.folderIdFor(folder);
+    return this.verdictFolderIn(await this.memberFolderId(member), folder);
+  }
+
+  /** id/name/parents of a folder, or null if the service account cannot see it. */
+  async folderInfo(id) {
+    const response = await this.fetchImpl(
+      DRIVE_FILES_URL + "/" + assertDriveId(id, "folder") + "?supportsAllDrives=true&fields=id,name,parents",
+      { headers: await this.authHeaders() },
+    );
+    if (response.status === 404 || response.status === 403) return null;
+    if (!response.ok) throw new Error("Drive folder lookup failed: HTTP " + response.status);
+    return response.json();
+  }
+
+  /**
+   * If a file sits in <root>/<member>/<Verdict>, the id of that member folder;
+   * otherwise null (flat or root file). Decided from names and parentage, so
+   * it needs no member from the caller.
+   */
+  async memberFolderOf(parentIds) {
+    const verdictNames = Object.values(DRIVE_FOLDER_NAMES);
+    for (const parentId of parentIds) {
+      if (parentId === this.folderId) continue;
+      const parent = await this.folderInfo(parentId);
+      if (!parent || !verdictNames.includes(parent.name)) continue;
+      for (const grandId of parent.parents ?? []) {
+        if (grandId === this.folderId) continue;
+        const grand = await this.folderInfo(grandId);
+        if (grand && isMemberFolderName(grand.name) && (grand.parents ?? []).includes(this.folderId)) return grandId;
+      }
+    }
+    return null;
+  }
+
+  async findOrCreateFolder(name, parentId = this.folderId) {
     const q =
       "name = " + driveQuote(name) +
-      " and " + driveQuote(this.folderId) + " in parents" +
+      " and " + driveQuote(parentId) + " in parents" +
       " and mimeType = " + driveQuote(DRIVE_FOLDER_MIME) +
       " and trashed = false";
     const params = new URLSearchParams({
@@ -152,14 +230,14 @@ export class GoogleDriveStorage {
     const created = await this.fetchImpl(DRIVE_FILES_URL + "?supportsAllDrives=true&fields=id", {
       method: "POST",
       headers: await this.authHeaders({ "Content-Type": "application/json; charset=UTF-8" }),
-      body: JSON.stringify({ name, mimeType: DRIVE_FOLDER_MIME, parents: [this.folderId] }),
+      body: JSON.stringify({ name, mimeType: DRIVE_FOLDER_MIME, parents: [parentId] }),
     });
     if (!created.ok) throw new Error("Drive folder create failed: HTTP " + created.status);
     return assertDriveId((await created.json()).id, name + " folder");
   }
 
-  async store({ data, filename, contentType, folder, ownerTag = "" }) {
-    const parent = await this.folderIdFor(folder);
+  async store({ data, filename, contentType, folder, ownerTag = "", member = null }) {
+    const parent = await this.placementFor(folder, member);
     const mediaType = contentType || "application/octet-stream";
     const metadata = { name: safeFilename(filename, contentType, ownerTag), parents: [parent] };
     const upload = multipartRelated(metadata, data, mediaType);
@@ -177,26 +255,35 @@ export class GoogleDriveStorage {
     });
   }
 
-  /**
-   * Re-parent a file into `toFolder`. The current parents are read first and
-   * all of them removed, so the file ends up in exactly one folder even when
-   * it started in the root (legacy rows) or a concurrent move got there first.
-   */
   /** Drive folder id for a target; "legacy" is the root folder (undo only). */
   async targetIdFor(folder) {
     return folder === EvidenceFolder.LEGACY ? this.folderId : this.folderIdFor(folder);
   }
 
+  /**
+   * Re-parent a file into `toFolder`. The current parents are read first and
+   * all of them removed, so the file ends up in exactly one folder even when
+   * it started in the root (legacy rows) or a concurrent move got there first.
+   * A file in a member folder changes verdict inside that member folder.
+   */
   async move(ref, toFolder) {
     const fileId = assertDriveId(ref, "file");
-    const target = await this.targetIdFor(toFolder);
     const fileUrl = DRIVE_FILES_URL + "/" + fileId;
 
     const current = await this.fetchImpl(fileUrl + "?supportsAllDrives=true&fields=id,parents", {
       headers: await this.authHeaders(),
     });
     if (!current.ok) throw new Error("Drive file lookup failed: HTTP " + current.status);
-    const parents = ((await current.json()).parents ?? []).filter((id) => id !== target);
+    const currentParents = (await current.json()).parents ?? [];
+    const memberFolder = await this.memberFolderOf(currentParents);
+    let target;
+    if (memberFolder) {
+      if (toFolder === EvidenceFolder.LEGACY) throw new Error("a member-folder file cannot move to the legacy root");
+      target = await this.verdictFolderIn(memberFolder, toFolder);
+    } else {
+      target = await this.targetIdFor(toFolder);
+    }
+    const parents = currentParents.filter((id) => id !== target);
 
     const params = new URLSearchParams({
       addParents: target,
@@ -222,9 +309,9 @@ export class GoogleDriveStorage {
    * files.copy into `toFolder`: a separate file for a row whose ref is shared
    * with other rows (legacy duplicates). The original keeps its parents.
    */
-  async copy(ref, toFolder, { ownerTag = "" } = {}) {
+  async copy(ref, toFolder, { ownerTag = "", member = null } = {}) {
     const fileId = assertDriveId(ref, "file");
-    const target = await this.folderIdFor(toFolder);
+    const target = await this.placementFor(toFolder, member);
     const params = new URLSearchParams({ supportsAllDrives: "true", fields: "id,webViewLink" });
     const response = await this.fetchImpl(DRIVE_FILES_URL + "/" + fileId + "/copy?" + params, {
       method: "POST",

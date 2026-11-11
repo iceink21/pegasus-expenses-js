@@ -107,6 +107,8 @@ h1, h2, p, dl, dd { margin: 0; }
 }
 .title-row .page-title { margin-bottom: 0; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.filter-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.filter-row .input { width: auto; flex: 1 1 10rem; }
 .narrow { max-width: 24rem; margin: 32px auto 0; }
 .stack > * + * { margin-top: 16px; }
 .mt { margin-top: 16px; }

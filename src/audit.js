@@ -49,6 +49,8 @@ export const AuditAction = Object.freeze({
   ADMIN_EXPORT_XLSX: "admin.export_xlsx",
   ADMIN_VIEW_AUDIT: "admin.view_audit",
   ADMIN_VIEW_MEMBERS: "admin.view_members",
+  ADMIN_VIEW_SLIP: "admin.view_slip",
+  ADMIN_EXPORT_SLIPS: "admin.export_slips",
 });
 
 /** Same shape as Python's isoformat(timespec="seconds") in UTC. */

@@ -127,13 +127,33 @@ The verdict picks the folder, server-side:
 | admin approves a pending row | moved to `verified` | `approved` (+ `approved_amount`) |
 | admin rejects a pending row | moved to `rejected` | `rejected` |
 
-Folders are flat; the stored name starts with the member id (`M3_<stamp>_<rand>_<name>`).
-Local storage uses `<LOCAL_UPLOAD_DIR>/verified|needs-review|rejected`; Drive
-uses `Verified` / `Needs-Review` / `Rejected` under `GDRIVE_FOLDER_ID`
-(found or created on first use, or set with `GDRIVE_FOLDER_VERIFIED/_REVIEW/_REJECTED`).
-A duplicate stores its own copy. Rows from before routing keep their file
-where it was (`evidence_folder = legacy`); old duplicates may still share their
-original's file, and a review of one copies that file instead of moving it.
+New uploads are filed per member, member first, then verdict:
+
+```
+<LOCAL_UPLOAD_DIR>/สมชาย_M3/verified|needs-review|rejected/M3_<stamp>_<rand>_<name>
+Drive: <GDRIVE_FOLDER_ID>/สมชาย_M3/Verified|Needs-Review|Rejected/<file>
+```
+
+The member folder is `<display name>_M<member id>`: Thai/Unicode letters are
+kept (NFC), path separators, `..`, control characters and `/ \ : * ? " < > |`
+are removed, spaces become `_`, the name part is capped at 40 characters, and
+if nothing is left the folder is just `M<id>`. The `_M<id>` suffix is the stable
+identity; a renamed member starts a new folder, old files stay where they are.
+The name comes from the members table at upload time, never from a request.
+Folders are created on first use (local: `mkdir -p`; Drive: find-or-create,
+cached, concurrent creations shared). A review that changes the verdict moves the
+file inside the same member folder; `evidence_folder` in the database still holds
+only the bare verdict.
+
+Rows stored before this layout keep working untouched, with no migration: files
+in the flat `<LOCAL_UPLOAD_DIR>/verified|needs-review|rejected` folders (Drive:
+`Verified` / `Needs-Review` / `Rejected` directly under `GDRIVE_FOLDER_ID`, or
+the ids in `GDRIVE_FOLDER_VERIFIED/_REVIEW/_REJECTED`, which apply to this flat
+layout only) and files in the root (`evidence_folder = legacy`). A review of such
+a row moves it between the flat folders as before; it is not pulled into a member
+folder. A duplicate stores its own copy in the uploader's member folder. Old
+duplicates may still share their original's file, and a review of one copies that
+file (into the reviewed row's member folder) instead of moving it.
 
 `POST /api/admin/expenses/:id/review` with `{decision: "approve"|"reject",
 approved_amount?, note?}` reviews a `pending` row (else 409 `not_pending`).
@@ -342,29 +362,35 @@ admin sees everything. An admin can still upload on a member's behalf
 
 ---
 
-## 4. Deploy to Railway
+## 4. Deploy to Fly.io
 
-### 4.1 Attach a Volume (required)
+App `pegasus-uav-expenses-th`, region `sin`, config in `fly.toml`.
 
-Railway's plain filesystem is wiped on every redeploy. Without a Volume the
-whole expense history disappears the next time anyone pushes.
+### 4.1 Volume (required)
 
-1. Railway → service → **Settings → Volumes → Add Volume**, mount path `/data`
-2. Set `DB_PATH=/data/pegasus.db`
-3. If you use local evidence storage, set `LOCAL_UPLOAD_DIR=/data/uploads`
-   (Google Drive is the better choice; see 4.4)
+Fly Machines have an ephemeral root filesystem: a redeploy wipes it. The
+`[mounts]` section attaches the Volume named `data` at `/data`, and `[env]`
+points `DB_PATH=/data/pegasus.db` and `LOCAL_UPLOAD_DIR=/data/uploads` into it.
+A Volume belongs to exactly one Machine and SQLite cannot be shared, so run a
+single Machine (`fly scale count 1`). The service auto-stops when idle
+(`min_machines_running = 0`) and wakes on the next request.
+
+```bash
+fly volumes create data --region sin --size 1   # once
+```
 
 ### 4.2 Deploy
 
 ```bash
-railway up          # or connect the GitHub repo
+fly deploy
 ```
 
-`railway.json` builds with the `Dockerfile` (`node:24-bookworm-slim`, with no
-compiler toolchain needed) and points the healthcheck at `/healthz`, which
-reports exactly which providers are live. Railway sets `PORT`, and the server
-listens on `0.0.0.0` by default. A `Procfile` (`web: node src/server.js`) is
-included for non-Docker builders.
+The `Dockerfile` (`node:24-bookworm-slim`, no compiler toolchain needed) builds
+the image and `fly.toml` points the health check at `/healthz`, which reports
+exactly which providers are live. Secrets are set with `fly secrets set
+SESSION_SECRET=... ADMIN_PASSWORD=...`, never in `fly.toml`. A `Procfile`
+(`web: node src/server.js`) is included for non-Docker builders. `railway.json`
+is a leftover from the earlier Railway deploy and is not used on Fly.
 
 ### 4.3 Environment variables
 
@@ -381,7 +407,7 @@ included for non-Docker builders.
 | `SETUP_CODE_TTL_SECONDS` | no | Setup code lifetime. Default `259200` (72 h) |
 | `PASSWORD_SCRYPT_N` | no | scrypt cost. Default `32768`; lower it only in tests |
 | `COOKIE_SECURE` | no | Defaults to `1` unless `ALLOW_INSECURE_DEFAULTS=1` |
-| `TRUSTED_PROXY_IPS` | **yes on Railway/Fly** | `*` trusts forwarding headers from the platform edge (rightmost `X-Forwarded-For` entry, `X-Forwarded-Proto`). Without it, every audit row logs the proxy's IP and all clients share one login rate-limit bucket. `*` is only safe when nothing but the proxy can reach the port |
+| `TRUSTED_PROXY_IPS` | **yes on Fly** | `*` trusts forwarding headers from the platform edge (rightmost `X-Forwarded-For` entry, `X-Forwarded-Proto`). Without it, every audit row logs the proxy's IP and all clients share one login rate-limit bucket. `*` is only safe when nothing but the proxy can reach the port |
 | `CLIENT_IP_HEADER` | **yes on Fly** | `fly-client-ip` (set in `fly.toml`). Header the trusted proxy sets to the real client IP; preferred over `X-Forwarded-For`, read only from a trusted peer |
 | `EXPENSE_CATEGORIES` | no | Comma-separated |
 | `MATCH_EPSILON_THB` / `MATCH_EPSILON_PCT` | no | Defaults `1.0` / `0.005` |
@@ -398,7 +424,7 @@ included for non-Docker builders.
 | `LOG_LEVEL` | no | `debug` / `info` / `warning` / `error` / `silent` |
 
 `.env.example` lists every variable. The npm scripts load `./.env` if present
-for local use; on Railway the Dockerfile runs `node src/server.js` directly, so
+for local use; on Fly the Dockerfile runs `node src/server.js` directly, so
 production reads real Variables only.
 
 ### 4.4 Two manual steps still blocked on you
@@ -412,7 +438,7 @@ can create the credentials.
 1. In a Google Cloud project, enable **Cloud Vision API** (billing must be on).
 2. Go to **APIs & Services → Credentials → Create credentials → API key**, then
    restrict the key to the Cloud Vision API.
-3. Set `GOOGLE_VISION_API_KEY` in Railway. The key is sent in the
+3. Set `GOOGLE_VISION_API_KEY` as a Fly secret (`fly secrets set`). The key is sent in the
    `X-Goog-Api-Key` header, never in the URL.
 
 **B. Shared Drive + service account (evidence storage)**
@@ -421,7 +447,7 @@ can create the credentials.
 2. Create a folder inside a **Shared Drive**. Do not use My Drive: a service
    account has no storage quota, so uploads there fail. Share the folder with
    the service account's `client_email` as **Content manager**.
-3. Put the whole key JSON into `GDRIVE_SA_JSON`. If Railway mangles the
+3. Put the whole key JSON into `GDRIVE_SA_JSON`. If the secrets UI mangles the
    multi-line value, use `base64 -i key.json | tr -d '\n'`. Put the folder id
    from its URL into `GDRIVE_FOLDER_ID`.
 4. Delete the downloaded key file from your machine, or at least keep it out of
@@ -439,7 +465,7 @@ both be `false`.
 - [ ] `TEAM_PASSCODE` unset (retired)
 - [ ] Every person has their own account; setup codes sent privately, not in
       a group chat
-- [ ] App served over HTTPS (Railway default); leave `COOKIE_SECURE` unset or `1`
+- [ ] App served over HTTPS (Fly forces HTTPS in `fly.toml`); leave `COOKIE_SECURE` unset or `1`
 - [ ] `REQUIRE_REAL_PROVIDERS=1`
 - [ ] Volume attached and `DB_PATH` pointing into it
 - [ ] Slip images contain personal financial data, so keep the Drive folder
@@ -503,6 +529,9 @@ scripts/admin-reset.js recovery CLI behind `npm run admin:reset -- <username>`
 | `POST /upload` | member, api | member: `{status:"received", expense}`; admin (optional `member_id` of an existing member, default self): full decision JSON; 400 `unknown_member`, 422 `invalid_member_id` |
 | `GET /api/upload-form`, `/api/my`, `/api/expenses/:id` | member, api | JSON (401 `{location}` without a session; 403 `password_change_required` + `location`) |
 | `GET /admin`, `/admin/audit`, `/admin/members`, `/admin/export.csv`, `/admin/totals.xlsx` | admin, page | page / CSV / xlsx (a member session gets 303 `/upload`) |
+| `GET /admin/expenses/:id/slip` | admin, page | the stored slip: images inline only when the file's leading bytes match its extension, anything else an `application/octet-stream` attachment; always `Cache-Control: private, no-store`, `nosniff`, `CSP: default-src 'none'; sandbox`; Drive rows 302 to the `drive.google.com` / `docs.google.com` link; 422 `invalid_id`, 404. Audited as `admin.view_slip` (success and failure) |
+| `GET /admin/slips.zip` | admin, page | streamed zip of every local slip as `<name>_M<id>/<folder>/<file>`. Audited as `admin.export_slips`: a `started` row, then `success` or `aborted` (with `files`, `skipped`, `warnings`) |
+| `GET /api/admin/expenses` | admin, api | `?verdict=verified\|needs-review\|rejected\|legacy` (the evidence folder) and `?member=` (name substring) → `{rows}` with only the columns the admin table shows (no file path, hash or extractor detail); 400 `invalid_verdict` |
 | `GET /api/admin/members` | admin, api | `{members:[{id, username, name, role, disabled, locked, locked_until, failed_logins, needs_setup, setup_code_active, setup_code_expires_at, must_change_password, password_changed_at, created_at}], self_id}` |
 | `POST /api/admin/members` | admin, api | `{username, name, role?}` → 201 `{member, setup_code, setup_code_expires_at}` (no-store); 409 `username_taken` / `name_taken` |
 | `POST /api/admin/members/:id/setup-code` | admin, api | reset → `{member, setup_code, setup_code_expires_at}` |

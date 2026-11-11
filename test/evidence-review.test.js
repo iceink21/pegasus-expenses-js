@@ -14,6 +14,7 @@ import { test } from "node:test";
 import ExcelJS from "exceljs";
 
 import { routeFolder, Verdict } from "../src/decision.js";
+import { memberFolderName } from "../src/storage/base.js";
 import { LocalDiskStorage } from "../src/storage/local.js";
 import { loadTotals } from "../src/totals.js";
 import { buildTotalsWorkbook, ITEMS_SHEET, SUMMARY_SHEET, XLSX_MIME } from "../src/xlsx.js";
@@ -41,7 +42,19 @@ async function submit(client, claimed, marker, salt) {
 
 const review = (client, id, payload) => client.postJson("/api/admin/expenses/" + id + "/review", payload);
 
+// New uploads live at <uploads>/<name>_M<id>/<verdict>/<file>.
 function assertFileIn(app, row, folder) {
+  assert.ok(fs.existsSync(row.evidence_ref), "evidence file missing: " + row.evidence_ref);
+  const memberDir = memberFolderName({
+    memberId: row.member_id,
+    memberName: query(app.dbPath, "SELECT name FROM members WHERE id = ?", row.member_id)[0].name,
+  });
+  assert.equal(path.dirname(row.evidence_ref), path.join(path.resolve(app.uploadDir), memberDir, folder));
+  assert.equal(row.evidence_folder, folder);
+}
+
+// Legacy rows keep the flat <uploads>/<verdict>/<file> layout after a review.
+function assertFlatFileIn(app, row, folder) {
   assert.ok(fs.existsSync(row.evidence_ref), "evidence file missing: " + row.evidence_ref);
   assert.equal(path.dirname(row.evidence_ref), path.join(path.resolve(app.uploadDir), folder));
   assert.equal(row.evidence_folder, folder);
@@ -322,7 +335,7 @@ test("a legacy local file in the upload root is moved by a review", async (t) =>
   const admin = await adminClient(app);
   assert.equal((await review(admin, id, { decision: "approve", approved_amount: "1" })).status, 200);
   const row = expenseRow(app, id);
-  assertFileIn(app, row, "verified");
+  assertFlatFileIn(app, row, "verified");
   assert.equal(fs.readFileSync(row.evidence_ref, "utf8"), "old slip");
   assert.equal(JSON.parse(auditRows(app, "expense.review.approved")[0].detail).from_folder, "legacy");
 });
@@ -464,7 +477,12 @@ test("a failed transaction on a shared legacy file deletes the copy, never the o
   const admin = await adminClient(app);
   assert.equal((await review(admin, b, { decision: "reject" })).status, 500);
   assert.equal(fs.readFileSync(shared, "utf8"), "genuine slip");
-  assert.deepEqual(fs.readdirSync(path.join(path.resolve(app.uploadDir), "rejected")), [], "the copy was removed");
+  assert.deepEqual(fs.readdirSync(path.join(path.resolve(app.uploadDir), "rejected")), [], "no flat copy was made");
+  const memberDir = memberFolderName({
+    memberId: expenseRow(app, b).member_id,
+    memberName: query(app.dbPath, "SELECT name FROM members WHERE id = ?", expenseRow(app, b).member_id)[0].name,
+  });
+  assert.deepEqual(fs.readdirSync(path.join(path.resolve(app.uploadDir), memberDir, "rejected")), [], "the copy was removed");
   const detail = JSON.parse(auditRows(app, "expense.review.tx_failed")[0].detail);
   assert.deepEqual([detail.undo, detail.undo_ok, detail.copied_shared_evidence], ["removed_copy", true, true]);
 });

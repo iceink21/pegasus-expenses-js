@@ -9,7 +9,7 @@ import { loadInto } from "../error-view.js";
 
 const container = document.getElementById("dashboard");
 
-const COLUMNS = ["#", "วันที่", "ผู้จ่าย", "หมวด", "กรอก", "อ่านได้", "อนุมัติ", "ผล", "ธง", "สถานะตรวจ", "โฟลเดอร์"];
+const COLUMNS = ["#", "สลิป", "วันที่", "ผู้จ่าย", "หมวด", "กรอก", "อ่านได้", "อนุมัติ", "ผล", "ธง", "สถานะตรวจ", "โฟลเดอร์"];
 const NUMERIC_COLUMNS = new Set(["กรอก", "อ่านได้", "อนุมัติ"]);
 
 function reviewBadge(status) {
@@ -22,6 +22,11 @@ function expenseRow(row) {
     "tr",
     {},
     h("td", { class: "mono muted" }, h("a", { class: "muted", href: "/expenses/" + encodeURIComponent(row.id) }, row.id)),
+    h(
+      "td",
+      { class: "nowrap" },
+      h("a", { href: "/admin/expenses/" + encodeURIComponent(row.id) + "/slip", target: "_blank", rel: "noopener" }, "ดูสลิป"),
+    ),
     h("td", { class: "nowrap" }, formatDt(row.created_at)),
     h("td", { class: "nowrap" }, row.member_name),
     h("td", { class: "nowrap" }, row.category),
@@ -35,8 +40,44 @@ function expenseRow(row) {
   );
 }
 
+const FOLDER_CHOICES = ["verified", "needs-review", "rejected"];
+
+// The claims table with its filters; refetches from /api/admin/expenses.
+function claimsTable(initialRows) {
+  const tbody = h("tbody", {}, initialRows.map(expenseRow));
+  const member = h("input", { class: "input", type: "search", name: "member", placeholder: "ชื่อผู้จ่าย", "aria-label": "ชื่อผู้จ่าย" });
+  const verdict = h(
+    "select",
+    { class: "input", name: "verdict", "aria-label": "ผลตรวจ" },
+    h("option", { value: "" }, "ทุกผล"),
+    FOLDER_CHOICES.map((folder) => h("option", { value: folder }, folderLabel(folder))),
+  );
+  const form = h("form", { class: "filter-row mt" }, member, verdict, h("button", { class: "btn btn-secondary btn-small", type: "submit" }, "กรอง"));
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const params = new URLSearchParams();
+    if (member.value.trim()) params.set("member", member.value.trim());
+    if (verdict.value) params.set("verdict", verdict.value);
+    const data = await getJson("/api/admin/expenses" + (params.size ? "?" + params : ""));
+    tbody.replaceChildren(...data.rows.map(expenseRow));
+  });
+  const table = h(
+    "div",
+    { class: "card table-card" },
+    h(
+      "table",
+      { class: "table" },
+      h("thead", {}, h("tr", {}, COLUMNS.map((name) => h("th", { class: NUMERIC_COLUMNS.has(name) ? "num" : null }, name)))),
+      tbody,
+    ),
+  );
+  return [form, table];
+}
+
 loadInto(container, async () => {
   const data = await getJson("/api/admin/dashboard");
+  // The table comes from the slim list endpoint, not the dashboard's full rows.
+  const claims = await getJson("/api/admin/expenses");
   const grand = data.grand;
   const stat = (label, value, extraClass = "", sub = null) =>
     h(
@@ -83,16 +124,7 @@ loadInto(container, async () => {
       ),
     ),
     h("h2", { class: "section-title mt" }, "รายการทั้งหมด"),
-    h(
-      "div",
-      { class: "card table-card" },
-      h(
-        "table",
-        { class: "table" },
-        h("thead", {}, h("tr", {}, COLUMNS.map((name) => h("th", { class: NUMERIC_COLUMNS.has(name) ? "num" : null }, name)))),
-        h("tbody", {}, data.rows.map(expenseRow)),
-      ),
-    ),
+    ...claimsTable(claims.rows),
     h(
       "div",
       { class: "card mt" },
